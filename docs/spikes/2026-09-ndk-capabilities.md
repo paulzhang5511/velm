@@ -64,10 +64,33 @@ onNativeWindowCreated
   - 结论：输入消费（T12）落地前 demo 不可交互，这是预期；T3 spike 必须最先验证 `ALooper_prepare(ALLOW_NON_CALLBACKS)` + `AInputQueue_attachLooper` + `getEvent`/`finishEvent` 闭环，且每事件恰好 finish 一次。
   - `onInputQueueDestroyed`、`onDestroy` 的干净路径在 T12/T14 随引擎线程验证（BACK 键当前被 ANR 对话框拦截，无法用于验证）。
 
-## 4. T3 待验证（未完成）
+## 4. 符号核对清单（2026-09-22 完成，raw-ndk-sys 0.1.2 全部具备 → ADR-02 定稿，不切 ndk-sys）
 
-- [ ] `ALooper_prepare/wake/pollOnce`、`AInputQueue_attachLooper/detachLooper/getEvent/finishEvent` 符号与签名（整数类型以 bindings 为准，不照抄 docs 的 as i32/u32）。
-- [ ] `ANativeWindow_acquire/release`、`ANativeWindow_setBuffersGeometry`（RGBA_8888）、width/height 查询。
-- [ ] `AConfiguration_fromAssetManager` / `AConfiguration_getDensity`（ADR-12 density）。
-- [ ] 引擎线程 Looper 16ms 超时 + 销毁同步 ack POC（SPEC §3.3）。
+| 符号 | 签名要点（bindings 实测） |
+|---|---|
+| `ALooper_prepare` | `(opts: c_int) -> *mut ALooper`；`ALOOPER_PREPARE_ALLOW_NON_CALLBACKS = 1` |
+| `ALooper_forThread` | `() -> *mut ALooper` |
+| `ALooper_wake` | `(looper)` |
+| `ALooper_pollOnce` | `(timeoutMillis: c_int, *mut c_int, *mut c_int, *mut *mut c_void) -> c_int`；返回 `WAKE=-1 / CALLBACK=-2 / TIMEOUT=-3 / ERROR=-4 / >=0 为 ident`（**所有返回值都可能隐含 WAKE**） |
+| `AInputQueue_attachLooper` | `(queue, looper, ident: c_int, callback: Option<fn> = null, data: *mut c_void)`；用 ident=1、callback=null，pollOnce 返回 ident 后 getEvent |
+| `AInputQueue_detachLooper` | `(queue)`（同步：返回后不再有事件回调） |
+| `AInputQueue_hasEvents / getEvent` | `getEvent(queue, *mut *mut AInputEvent) -> i32`（<0 无事件/错误） |
+| `AInputQueue_preDispatchEvent` | `(queue, event) -> i32`（非 0 表示已被 IME 预派发，须放弃本轮处理） |
+| `AInputQueue_finishEvent` | `(queue, event, handled: c_int)`——getEvent 后必须恰好一次 |
+| `AInputEvent_getType` | `(*const AInputEvent) -> i32`；`AINPUT_EVENT_TYPE_KEY=1 / MOTION=2` |
+| `AKeyEvent_getKeyCode` | `(*const) -> i32`；`AKEYCODE_BACK = 4` |
+| `AMotionEvent_getAction` | `(*const) -> i32`（**i32，非 u32**；低 8 位 action，`& 0xff` 时按 u32 解释；DOWN=0/UP=1/MOVE=2/CANCEL=3） |
+| `AMotionEvent_getX/getY` | `(*const, pointer_index: usize) -> f32`；`getPointerCount(*const) -> usize` |
+| `ANativeWindow_acquire/release` | `(*mut ANativeWindow)` |
+| `ANativeWindow_getWidth/getHeight` | `(*mut) -> i32` |
+| `ANativeWindow_setBuffersGeometry` | `(window, w: i32, h: i32, format: i32) -> i32`；`WINDOW_FORMAT_RGBA_8888 = 1` |
+| `AConfiguration_fromAssetManager` | `(out: *mut AConfiguration, am: *mut AAssetManager)` |
+| `AConfiguration_getDensity` | `(*mut) -> i32`（dpi 原始值，/160.0 得 density） |
+| `AConfiguration_delete` | `(*mut AConfiguration)` |
+
+## 5. T3 POC 待验证（Slice 2/3）
+
+- [ ] 引擎线程 `ALooper_prepare(ALLOW_NON_CALLBACKS)` + `AInputQueue_attachLooper` + pollOnce/getEvent/finishEvent 闭环；BACK 键不再 ANR。
+- [ ] 回调只经 crossbeam-channel 发布；QueueDestroyed detach 同步 ack；onDestroy 发 Quit 并 join。
+- [ ] `ANativeWindow` acquire/release 平衡 + 真机宽高/density 取值；反复启停 10 次无卡死。
 - [ ] `AChoreographer` 仅登记符号，P1 不接线。
