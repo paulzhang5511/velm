@@ -88,9 +88,31 @@ onNativeWindowCreated
 | `AConfiguration_getDensity` | `(*mut) -> i32`（dpi 原始值，/160.0 得 density） |
 | `AConfiguration_delete` | `(*mut AConfiguration)` |
 
-## 5. T3 POC 待验证（Slice 2/3）
+## 5. T3 POC 验证结果（Slice 2，2026-09-22，x86_64/API36 真机实证）
 
-- [ ] 引擎线程 `ALooper_prepare(ALLOW_NON_CALLBACKS)` + `AInputQueue_attachLooper` + pollOnce/getEvent/finishEvent 闭环；BACK 键不再 ANR。
-- [ ] 回调只经 crossbeam-channel 发布；QueueDestroyed detach 同步 ack；onDestroy 发 Quit 并 join。
-- [ ] `ANativeWindow` acquire/release 平衡 + 真机宽高/density 取值；反复启停 10 次无卡死。
+引擎线程 + Looper + 输入队列闭环已实现于 `crates/velm/src/engine/activity_thread.rs`：
+
+- [x] 引擎线程（命名 `velm-engine`）内 `ALooper_prepare(ALLOW_NON_CALLBACKS)`，`AInputQueue_attachLooper(ident=1, callback=None)`；`pollOnce(16ms)` 返回 ident 后 `getEvent → preDispatchEvent → finishEvent` 闭环。
+- [x] 主线程回调只经 crossbeam-channel 发布；控制消息入队后 `ALooper_wake`（Looper 指针由引擎线程 prepare 后经 `AtomicPtr` 注册）。
+- [x] QueueDestroyed 同步 ack：主线程建一次性 channel 发送并 `recv()` 阻塞，引擎线程 `detachLooper` 后回执，实测 2–4ms 放行。
+- [x] BACK 键（keyCode=4）引擎线程消费并 `finishEvent(handled=0)` 交回框架默认 → Activity finish → window/queue destroyed（同步 ack）→ onDestroy 发 Quit → 引擎线程退出 → `join()` 完成；**无 ANR**（对照：T1 未 attach 时 5001ms 必 ANR）。
+- [x] `adb shell input tap 160 320` 收到 MotionEvent DOWN(0)/UP(1)，坐标精确，`finishEvent(handled=1)`。
+- [x] bindgen 类型注意：`AINPUT_EVENT_TYPE_*` 常量生成为 **u32**，而 `AInputEvent_getType` 返回 i32，比较须 `as i32`；`AMotionEvent_getAction` 返回 **i32**，低 8 位 `& 0xff` 为 action。
+
+### 5.1 关键发现：不提交首帧则触摸事件不投递（T10 硬约束）
+
+未绘制任何 buffer 时（T1/T3-Slice2 早期）：
+
+- `dumpsys window`：window frame 全屏 `[0,0][320,640]`，但 **surface geometry 为 `[0,0][0,0]`**；
+- `dumpsys input`：app 的 InputWindowHandle **frame=`[0,0][0,0]`、touchableRegion=`<empty>`**；
+- InputDispatcher 静默丢弃触摸（仅见 ActivityRecordInputSink 的 `NO_INPUT_CHANNEL` 提示，该提示本身正常）；按键走焦点窗口通道不受影响（故 BACK 能到 native、触摸不能）。
+
+POC 验证：在 `onNativeWindowCreated` 中 `setBuffersGeometry(RGBA_8888)` + `ANativeWindow_lock` 填 #121212 + `unlockAndPost` 提交一帧（320×640 stride=320）后，InputWindowHandle 几何随即建立，触摸事件立即到达。
+
+**结论（写入 T10 验收）**：渲染器必须在窗口创建后尽快提交首帧（哪怕清屏），否则任何触摸交互都不会被 InputDispatcher 投递；T11 静态画面里程碑天然满足该条件。该 probe 帧为临时代码（`post_probe_frame`），T10 vello 渲染器接入后删除。
+
+## 6. T3 POC 待验证（Slice 3）
+
+- [ ] `ANativeWindow_acquire/release` 平衡 + 真机宽高与 `AConfiguration_getDensity` 取值（ADR-12）。
+- [ ] 反复启停 10 次无卡死/崩溃（同步 ack + join 时序压力）。
 - [ ] `AChoreographer` 仅登记符号，P1 不接线。

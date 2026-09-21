@@ -36,7 +36,11 @@ fn main() {
         .join("lib")
         .join(triple)
         .join("29");
-    assert!(lib_dir.exists(), "NDK stub 目录不存在: {}", lib_dir.display());
+    assert!(
+        lib_dir.exists(),
+        "NDK stub 目录不存在: {}",
+        lib_dir.display()
+    );
 
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
     println!("cargo:rerun-if-env-changed=ANDROID_NDK_ROOT");
@@ -48,14 +52,12 @@ fn main() {
 fn ndk_prebuilt_dir(triple: &str) -> Option<PathBuf> {
     // 1) cargo-apk2 / cargo-ndk 设置 CC_<triple>=.../prebuilt/<host>/bin/clang
     let cc_env = format!("CC_{}", triple.replace('-', "_"));
-    if let Some(cc) = std::env::var_os(&cc_env) {
-        let p = Path::new(&cc);
+    if let Some(cc) = std::env::var_os(&cc_env)
+        && let Some(prebuilt) = Path::new(&cc).parent().and_then(Path::parent)
+        && prebuilt.join("sysroot").is_dir()
+    {
         // bin/clang -> bin/.. -> prebuilt/<host>
-        if let Some(prebuilt) = p.parent().and_then(Path::parent) {
-            if prebuilt.join("sysroot").is_dir() {
-                return Some(prebuilt.to_path_buf());
-            }
-        }
+        return Some(prebuilt.to_path_buf());
     }
 
     // 2) 显式 NDK 环境变量
