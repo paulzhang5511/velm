@@ -17,7 +17,9 @@ log = "0.4"
 raw-ndk-sys = "0.1.2"
 android_logger = "0.15"
 crossbeam-channel = "0.5"
-# T2 spike（ADR-03：wgpu 29 / rwh 0.6 / pollster；vello/peniko 在 Slice2 引入）
+# T2 spike（ADR-03：vello 0.10 / wgpu 29 / rwh 0.6 / pollster / peniko 0.6）
 wgpu = { version = "29", default-features = false, features = ["vulkan"] }
 pollster = "0.4"
 raw-window-handle = "0.6"
+vello = { version = "0.10", default-features = false, features = ["wgpu"] }
+peniko = "0.6"

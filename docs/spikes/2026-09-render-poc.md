@@ -3,7 +3,7 @@
 **日期**：2026-09-22
 **对应任务**：PLAN Task 2（渲染 spike）、ADR-03（渲染栈版本）、ADR-06（文本栈，Slice 3 决策）
 **设备**：x86_64 / API 36 模拟器（AVD velm_test，swiftshader_indirect，320×640，density 160）
-**状态**：Slice 1 ✅ ｜ Slice 2 ⬜ vello Scene ｜ Slice 3 ⬜ 文本 ｜ Slice 4 ⬜ resize
+**状态**：Slice 1 ✅ ｜ Slice 2 ✅ vello Scene ｜ Slice 3 ⬜ 文本 ｜ Slice 4 ⬜ resize
 
 本 spike 以消除渲染路径不确定性为目标，代码直接落在框架 `crates/velm/src/render/`
 （T10 `VelloRenderer` 的前身），允许原型质量，但每个关键 API 与设备行为必须真机实证。
@@ -15,7 +15,7 @@
 | Slice | 目标 | 最高风险 | 状态 |
 |---|---|---|---|
 | 1 | `ANativeWindow` → rwh 0.6 → wgpu 29 surface（Vulkan）→ adapter/device → 清屏 present | 模拟器软件 Vulkan 是否可用、wgpu 29 API 变迁 | ✅ 2026-09-22 |
-| 2 | 引入 vello 0.10（`features=["wgpu"]`）+ peniko 0.6，Scene 清屏 + 圆角矩形 | vello 0.10 真实 API 序列、limits 要求 | ⬜ |
+| 2 | 引入 vello 0.10（`features=["wgpu"]`）+ peniko 0.6，Scene 清屏 + 圆角矩形 | vello 0.10 真实 API 序列、limits 要求 | ✅ 2026-09-22 |
 | 3 | glifo 0.2 vs skrifa 0.44 时间盒；Roboto + NotoSansCJK 中英文 | 文本栈选型、ttc index、AssetManager 读字体 | ⬜ |
 | 4 | `onNativeWindowResized` → surface 重配；旋转不崩；ADR-06 定稿 | resize 时序、旧帧失效处理 | ⬜ |
 
@@ -138,4 +138,147 @@ group layout 也有名）。
    任何失败 log + 恢复，**不 panic**（ADR-11）。
 5. 销毁顺序：drop renderer → release window；与 T3 同步 ack 协议兼容。
 6. limits 先用 downlevel_webgl2；Slice 2 若 vello 需要更高 limits，在真机/模拟器分别
-   核对支持情况再上调。
+   核对支持情况再上调。**（Slice 2 已复核：vello 需要 `Limits::default()`，surface 格式
+   改为非 sRGB，见 §3.6，以 §3 为准。）**
+
+---
+
+## 3. Slice 2：vello Scene 圆角矩形（✅ 真机通过）
+
+在 Slice 1 的 wgpu surface 链路上接入 vello，把 `WgpuClear` 演进为 `VelloRenderer`，
+用 vello Scene 绘制 ADR-10 的绿色圆角矩形，证明 **vello compute 光栅化 → 中间纹理 →
+blit 上屏** 的完整 2D 渲染路径。
+
+### 3.1 依赖（`crates/velm/Cargo.toml`，android target）
+
+```toml
+vello  = { version = "0.10", default-features = false, features = ["wgpu"] }
+peniko = "0.6"
+```
+
+`cargo tree` 实测解析为单一 wgpu 版本，无重复：
+
+```
+vello 0.10.0
+├── peniko 0.6.1
+├── kurbo 0.13.1
+├── skrifa 0.44.0        # vello 内部已带（Slice 3 / ADR-06 的关键事实）
+└── wgpu 29.0.4          # 与我们直接依赖的 wgpu 29 对齐，全树唯一版本
+```
+
+vello 关闭默认 feature、仅开 `wgpu`（不引入其平台样板）；peniko/kurbo/skrifa 均通过
+`vello::peniko` / `vello::kurbo` re-export 使用，无需直接声明 kurbo/skrifa。
+
+### 3.2 已验证的 vello 0.10 真实 API 序列
+
+> 0.10 与网上 0.7/0.8 示例差异较大（无 `render_to_surface`），以下经编译 + 真机确认。
+
+1. **Renderer**：`vello::Renderer::new(&device, RendererOptions) -> Result<Renderer>`
+   （不是旧版 `new_device`）。选项：
+   ```
+   RendererOptions {
+       use_cpu: false,                                  // 默认
+       antialiasing_support: AaSupport::area_only(),    // 仅 Area AA，shader 变体最少
+       num_init_threads: NonZeroUsize::new(1),          // 单线程编译 shader
+       pipeline_cache: None,
+   }
+   ```
+   `Renderer::new` 会在此时编译/初始化全部 shader pipeline；SwiftShader 上单线程
+   area_only 约亚秒~秒级，发生在引擎线程（不阻塞主线程）。
+2. **中间纹理（vello 渲染目标）**：0.10 **没有 `render_to_surface`**，官方推荐渲染到
+   一张中间纹理再 blit。目标纹理必须：
+   - `format = Rgba8Unorm`（**非 sRGB**，vello 硬性要求）；
+   - `usage = STORAGE_BINDING`（compute 写入）**| `TEXTURE_BINDING`**（blitter 采样）。
+3. **Scene 编码**：
+   ```
+   let mut scene = vello::Scene::new();
+   let rect = kurbo::Rect::new(40.0, 250.0, 280.0, 390.0);
+   let rounded = kurbo::RoundedRect::from_rect(rect, 20.0);   // 半径 20px
+   scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY,
+              peniko::Color::from_rgba8(0x2E,0x7D,0x32,0xFF), None, &rounded);
+   ```
+   `Scene::fill(style, transform, brush: impl Into<BrushRef>, brush_transform, shape: &impl Shape)`。
+   **没有 `Scene::clear`**：清屏由 `RenderParams::base_color` 负责。
+4. **渲染到纹理**：
+   ```
+   vello.render_to_texture(&device, &queue, &scene, &target_view, &RenderParams {
+       base_color: Color::from_rgba8(0x12,0x12,0x12,0xFF), // 背景清屏
+       width, height,
+       antialiasing_method: AaConfig::Area,
+   })?;   // 返回 Result<()>，内部自行 submit compute pass
+   ```
+5. **blit 上屏**：`wgpu::util::TextureBlitter::new(&device, target_format)`，每帧
+   `blitter.copy(&device, &mut encoder, &source_view, &target_surface_view)`（内部是一个
+   `LoadOp::Load` 的全屏三角形 render pass；**source 格式不限、target 格式必须等于
+   `new` 时传入的格式**）。随后 `queue.submit([encoder.finish()])` → `frame.present()` →
+   `device.poll(wait_indefinitely())`。
+6. **取帧/呈现/poll** 与 Slice 1 完全相同（`CurrentSurfaceTexture` 枚举、Fifo）。
+
+### 3.3 关键坑：色彩管线双重 sRGB 编码（最重要结论）
+
+首次按 Slice 1 的做法让 surface 取 caps 首选 **Rgba8UnormSrgb**，画面整体**泛白**：
+背景 #121212 显示成约 #4a4a4a，深绿 #2E7D32 显示成浅绿（截图对照
+`/tmp/velm_vello_rect.png`）。
+
+根因：**vello fine pass 输出到 Rgba8Unorm 纹理的字节值已经是 sRGB 编码结果**
+（vello 内部在线性空间混合，输出阶段完成线性→sRGB 编码，约定目标为「线性标签」的
+Rgba8Unorm）。再把它 blit 到 `Rgba8UnormSrgb` surface，硬件在 render pass 输出时
+**又做一次线性→sRGB 编码**，于是二次编码、整体提亮。
+
+**解法（权威结论）**：全链路统一非 sRGB、值直通——
+
+- surface `config.format = Rgba8Unorm`（不用 caps 首选的 sRGB；Rgba8Unorm 在 Vulkan
+  上保证支持，实测 caps 列表中含）；
+- TextureBlitter target format 同为 Rgba8Unorm；
+- vello 中间纹理本就是 Rgba8Unorm。
+
+三处格式一致后 blit 不做任何 gamma 转换，vello 输出什么字节就显示什么。修正后截图
+颜色完全正确：近黑 #121212 底 + #2E7D32 深绿圆角矩形、圆角抗锯齿清晰
+（`/tmp/velm_vello_color.png`，临时非交付物）。
+
+> 对比 Slice 1：纯 wgpu `LoadOp::Clear` 直接清 sRGB surface 时，clear 值被当作**线性**
+> 值由硬件编码一次，所以那时要填线性 0.00605。接入 vello 后编码责任转移给 vello，
+> surface 必须退回非 sRGB。两条路径的颜色空间约定不同，T10 统一走 vello 路径，
+> 一律以本条为准。
+
+### 3.4 limits 上调为 default
+
+Slice 1 的 `Limits::downlevel_webgl2_defaults()` 不足以支撑 vello 的 compute 管线
+（大量 storage texture/buffer 与 workgroup 需求）。改为 **`wgpu::Limits::default()`**，
+SwiftShader Vulkan 1.3 完整接受、`request_device` 成功、渲染无校验错误。真机
+Mali/Adreno 的 default limits 支持情况留待 arm64 真机复核（当前仅 x86_64 模拟器动态验证
++ aarch64 静态编译/clippy 通过）。
+
+### 3.5 生命周期、销毁与压测
+
+- 渲染器字段（按 drop 顺序）：vello `Renderer`、`TextureBlitter`、中间 `Texture`/`TextureView`、
+  surface/device/queue。`WindowDestroyed`/`Quit` 仍遵循「先 `take()` drop 渲染器、再
+  `ANativeWindow_release`」。实测 BACK 时 vello 全部 GPU 资源释放**无错误、无校验告警、
+  无原生崩溃**。
+- **压测**：force-stop 后 3 次 start（同步等待每轮 adapter 日志出现）→tap→BACK：
+  **3/3 vello 初始化成功、3/3 干净 join、3/3 触摸到达、`render_to_texture` 失败 0、
+  原生崩溃 0**。
+- **日志 ring buffer 坑（排查记录）**：早期固定时长压测出现「adapter 计数 2/3、join
+  3/3」的假象。根因不是框架，而是 `android_logger` 开在 **Trace** 级，vello 每次
+  `Renderer::new` 触发 naga/wgpu 海量 Trace 日志，**冲爆 logcat ring buffer**，把较早的
+  adapter 行挤出（join 行较新故保留）。已把日志级别降为 **Info**（框架自身只用
+  info/warn/error），降级后同样 3 轮压测 adapter=3、join=3、crash=0，计数稳定。
+  副作用：同时显著减少软件 Vulkan 启动期的日志 I/O。
+- 触摸在 vello 首帧 present 后正常到达（GPU 首帧同样建立输入窗口几何）。
+
+### 3.6 对 T10（正式渲染器）的约束（更新并覆盖 §2.6 相关条目）
+
+1. surface 格式固定 **Rgba8Unorm（非 sRGB）**；vello 中间纹理 Rgba8Unorm +
+   `STORAGE_BINDING | TEXTURE_BINDING`；TextureBlitter target 与 surface 同格式。
+   颜色一律用 peniko `Color::from_rgba8`，由 vello 负责 sRGB 编码，**不要再填线性
+   clear 值、不要用 sRGB surface**。
+2. device limits 用 **`wgpu::Limits::default()`**（vello 要求），真机复核。
+3. vello `Renderer::new` 用 `AaSupport::area_only()` + `num_init_threads = 1`；
+   AA 方法运行期传 `AaConfig::Area`。
+4. 每帧：Scene 编码（清屏走 `RenderParams::base_color`）→ `render_to_texture` →
+   TextureBlitter `copy` → submit → present → poll；`render_to_texture` 返回的错误
+   log 并跳过本帧，不 panic。
+5. resize（Slice 4）需同时重配 surface **并重建中间纹理**（`create_vello_target`
+   已封装），再补一帧。
+6. 日志级别固定 Info，禁止在装机验证构建开 Trace（ring buffer 会丢早期关键日志）。
+7. 其余 Instance/surface unsafe/Fifo/取帧枚举/销毁顺序沿用 §2.6。

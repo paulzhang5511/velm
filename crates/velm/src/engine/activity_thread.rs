@@ -83,7 +83,10 @@ pub unsafe fn bootstrap(
     let result = catch_unwind(AssertUnwindSafe(|| {
         android_logger::init_once(
             android_logger::Config::default()
-                .with_max_level(log::LevelFilter::Trace)
+                // 仅 Info：wgpu/naga/vello 的 Trace/Debug 日志（shader 编译）会
+                // 冲爆 logcat ring buffer 并拖慢软件 Vulkan 启动；框架自身只用
+                // info/warn/error。
+                .with_max_level(log::LevelFilter::Info)
                 .with_tag(LOG_TAG),
         );
 
@@ -154,7 +157,7 @@ fn engine_main(rx: Receiver<EngineMsg>, looper_slot: Arc<AtomicPtr<ALooper>>) {
 
         let mut queue: *mut AInputQueue = ptr::null_mut();
         let mut window: *mut ANativeWindow = ptr::null_mut();
-        let mut renderer: Option<crate::render::WgpuClear> = None;
+        let mut renderer: Option<crate::render::VelloRenderer> = None;
 
         'outer: loop {
             // 先排空控制通道，保证销毁/退出消息优先于输入处理。
@@ -185,16 +188,16 @@ fn engine_main(rx: Receiver<EngineMsg>, looper_slot: Arc<AtomicPtr<ALooper>>) {
                         }
                         window = w;
                         log::info!("引擎获得窗口 {w:p}：{width}x{height} density={density:.2}");
-                        match crate::render::WgpuClear::new(
+                        match crate::render::VelloRenderer::new(
                             w,
                             width.max(0) as u32,
                             height.max(0) as u32,
                         ) {
-                            Some(gpu) => {
-                                gpu.render_clear();
+                            Some(mut gpu) => {
+                                gpu.render_frame();
                                 renderer = Some(gpu);
                             }
-                            None => log::error!("wgpu 渲染器初始化失败（T2 spike）"),
+                            None => log::error!("vello 渲染器初始化失败（T2 spike）"),
                         }
                     }
                     EngineMsg::WindowDestroyed(NdkPtr(w), ack) => {
