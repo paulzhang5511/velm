@@ -1,0 +1,324 @@
+# Implementation Plan: Velm-UI v1.0 最小闭环
+
+- **日期**：2026-09-21
+- **依据**：`docs/SPEC.md`（规格）、`docs/DECISIONS.md`（ADR-01~12）
+- **计划性质**：SPECIFY 已完成、决策已落；本文件是 PLAN 阶段产物，**review 批准后进入 TASKS/IMPLEMENT**。本计划不含实现代码。
+- **v1 完成定义**：SPEC §12 的 SC-1 ~ SC-9（P0）全部达成。
+
+## Overview
+
+按「高风险 spike 先行 → host 纯逻辑 TDD → 平台/渲染 → 引擎闭环 → 生命周期硬化 → 交付」六段推进。前两个 spike 用最小代价消除两个可能推翻架构的不确定点（vello 0.10 在 Android 的真实 API、raw-ndk-sys 符号与零胶水事件模型）；随后 host 可测层（view/layout/event/hit-test/状态机）与设备相关层（window/renderer）两条泳道并行，在静态画面任务汇合，最后接通 TEA 交互闭环并做生命周期压测。
+
+## Architecture Decisions（已在 DECISIONS.md 定稿，摘要）
+
+- **ADR-03**：vello 0.10 正式版 + wgpu 29（放弃 git 0.2 开发快照）；rwh 0.6；peniko 0.6 / skrifa 0.44。
+- **ADR-07**：workspace = `crates/velm`（rlib 框架）+ `examples/counter`（cdylib demo），删除 `src/main.rs`。
+- **ADR-04**：cargo-apk2 打包，无 Gradle；cargo-ndk 备用。
+- **ADR-08**：minSdk 24 / NDK r27 / arm64 P0、x86_64 P1。
+- **ADR-09 + SPEC §3.3**：回调只发布事件；独立引擎线程持有 Looper 并 attach 输入队列；窗口/队列销毁走同步协议；按需重绘。
+- **ADR-01**：移除 ort/rstar/redb/jni/image/rayon/serde*；保留 crossbeam-channel/pollster/bytemuck/log。
+
+## 依赖图
+
+```text
+T1 workspace 骨架 + 空 cdylib 装机
+   ├──► T2 渲染 spike (vello0.10/wgpu29/rwh0.6/文本 POC) ─┐
+   └──► T3 NDK spike (符号核对/引擎线程 Looper/channel) ─┤
+                    │                                      │
+   CP-A（spike 评审，定稿 ADR-02/06 细节）                 │
+                    │                                      │
+   ┌────────────────┴───────────────┐                      │
+   │ 逻辑泳道（host，TDD）           │                      │
+   │ T4 view ──► T6 layout          │                      │
+   │   │      └► T7 hit-test        │                      │
+   │ T5 event（与 T4 并行）          │                      │
+   │ T6/T7/T5 ─► T8 app契约+状态机  │                      │
+   └────────────────┬───────────────┘                      │
+                    │                                      │
+   平台泳道：T3 ─► T9 window(rwh0.6) ─► T10 renderer ◄──────┘
+                    │                                      │
+                    └──────────────┬───────────────────────┘
+                                   ▼
+                      T11 静态画面接线 ─► CP-C
+                                   ▼
+                      T12 引擎线程/回调重写 ─► T13 输入交互闭环 ─► CP-D
+                                   ▼
+                      T14 生命周期硬化 ─► T15 打包/文档 ─► T16 质量门禁 ─► CP-E
+```
+
+## 并行机会
+
+- **T2 / T3**：渲染与 NDK 两个独立子系统，spike 可并行（不同会话/agent）。
+- **逻辑泳道 T4~T8 与平台泳道 T9~T10**：前者只依赖 peniko（host 可编译），后者只依赖 spike 结论；两泳道全程并行，T11 汇合。
+- T6 与 T7 在 T4 完成后并行；T5 与 T4 并行。
+- **必须串行**：workspace 骨架（T1）→ 一切；T11 → T12 → T13（同一引擎文件演进）；T14 在闭环之后。
+
+---
+
+# Task List
+
+## Phase 0 — Spike 与骨架（高风险先行）
+
+### Task 1: workspace 骨架 + 空 NativeActivity cdylib 装机
+
+**Description:** 按 ADR-07 把根 `Cargo.toml` 转为 workspace；新建 `crates/velm`（rlib）与 `examples/counter`（cdylib）；安装 cargo-apk2（ADR-04），配置 NDK r27（ADR-08）与 minSdk 24；demo 导出 `ANativeActivity_onCreate`，初始化 android_logger 并打印生命周期日志、绑定 5 个回调（回调体仅日志），打 APK 装到 arm64 真机/模拟器启动。删除 `src/main.rs`。
+
+**Acceptance criteria:**
+- [ ] `cargo build -p counter --target aarch64-linux-android` 产出的 `libcounter.so` 中 `nm -D` 可见 `ANativeActivity_onCreate`
+- [ ] cargo-apk2 打包安装后启动，logcat 可见 onCreate 与回调绑定日志（tag `VelmEngine`）
+- [ ] workspace 两 crate 均 `cargo build` 通过；`src/main.rs` 已删除；`Cargo.toml` 不含 ADR-01 移除项
+
+**Verification:**
+- [ ] `cargo metadata --format-version 1` 无错误
+- [ ] `adb logcat -s VelmEngine` 抓到启动日志；App 不闪退
+- [ ] `cargo clippy --workspace --target aarch64-linux-android -- -D warnings`
+
+**Dependencies:** None
+**Files likely touched:** `Cargo.toml`（根 workspace）、`crates/velm/Cargo.toml`、`crates/velm/src/lib.rs`、`examples/counter/Cargo.toml`、`examples/counter/src/lib.rs`（cargo-apk2 manifest 元数据置于 Cargo.toml，不额外建文件）
+**Estimated scope:** M（5 文件）
+
+### Task 2: 渲染 spike —— vello 0.10 / wgpu 29 / rwh 0.6 / 文本 POC
+
+**Description:** 在 counter（或临时 spike crate）中验证完整渲染路径：从 `ANativeWindow` 裸指针构造 rwh 0.6 句柄 → wgpu Instance/Adapter/Device/Surface（wgpu 29，SurfaceTargetUnsafe::RawHandle）→ 配置 Rgba8Unorm surface → vello 0.10 初始化与 Scene 编码（清屏 #121212、一个圆角矩形、一行英文、一行中文）→ present（pollster）。按 ADR-06 时间盒对比 glifo 0.2 与 skrifa 直绘，选定文本方案并记录系统字体加载方式（Roboto / NotoSansCJK ttc）。
+
+**Acceptance criteria:**
+- [ ] 真机窗口出现深色背景 + 彩色圆角矩形 + 清晰的中英文文本各一行
+- [ ] 窗口尺寸变化（旋转）后 surface 重配不崩、画面正确
+- [ ] spike 笔记明确：vello 0.10 真实 API 调用序列、wgpu 特性/呈现模式选择、文本方案（glifo 或 skrifa）、字体加载与 ttc 处理、遇到的版本坑
+
+**Verification:**
+- [ ] 设备截图存档（暗底/矩形/中英文可见）
+- [ ] 旋转 3 次无崩溃、无 surface 错误日志
+- [ ] 产出 `docs/spikes/2026-09-render-poc.md`，结论可直接指导 T10
+
+**Dependencies:** T1
+**Files likely touched:** `examples/counter/src/lib.rs`（POC 代码，允许原型质量）、`docs/spikes/2026-09-render-poc.md`
+**Estimated scope:** M（2 文件 + 设备验证；本任务以消除不确定性为目标，不追求结构）
+
+### Task 3: NDK 能力 spike —— 符号核对、引擎线程 Looper、通道模型
+
+**Description:** 按 ADR-02 核对 raw-ndk-sys 0.1.2 是否提供：`ALooper_prepare/wake/pollOnce`、`AInputQueue_attachLooper/detachLooper/getEvent/preDispatch/finish`、`ANativeWindow_acquire/release/getWidth/getHeight/setBuffersGeometry`、`AConfiguration_fromAssetManager/getDensity`、`AMotionEvent_*`；缺失项记录并评估 ndk-sys 0.6 兜底。POC 验证：主线程回调只通过 crossbeam-channel 发布事件，spawn 的引擎线程 `ALooper_prepare(ALLOW_NON_CALLBACKS)` 后把输入队列 attach 到自己的 Looper 并能被唤醒收到事件；验证窗口/队列销毁的同步 ack 时序。
+
+**Acceptance criteria:**
+- [ ] 输出符号核对清单（每个需要的符号：存在/缺失/签名差异），给出最终绑定选择（raw-ndk-sys 或 ndk-sys）
+- [ ] POC 真机证明：回调线程不阻塞；引擎线程收到 WindowCreated/QueueCreated/触摸事件；销毁事件能被同步送达并干净退出
+- [ ] 确认 density 获取路径与返回值（真机 dpi）
+
+**Verification:**
+- [ ] logcat 时序日志显示「回调立即返回、引擎线程消费」
+- [ ] 反复启停 10 次无卡死/崩溃
+- [ ] 产出 `docs/spikes/2026-09-ndk-capabilities.md`
+
+**Dependencies:** T1
+**Files likely touched:** `examples/counter/src/lib.rs`（POC）、`docs/spikes/2026-09-ndk-capabilities.md`
+**Estimated scope:** M
+
+### Checkpoint A — Spike 评审（与人 review 后才能继续）
+
+- [ ] T2/T3 真机证据齐全；ADR-02（绑定）、ADR-06（文本栈）从「spike 决定」变为「实测定稿」
+- [ ] vello 0.10 + wgpu 29 路径可行；若不可行，回到 DECISIONS 重新决策（不允许带疑问进入正式开发）
+- [ ] 零胶水事件模型时序得到真机验证；SPEC §3.3 无需推翻
+
+## Phase 1 — host 纯逻辑层（逻辑泳道，TDD）
+
+### Task 4: view 模块（params / text_view / view_group）
+
+**Description:** 按 SPEC §7.2 实现 `LayoutDimension`、`Orientation`、`EdgeInsets`、`LayoutParams`（Default = WrapContent/0 margin）、`Rect::contains`、`Background`（color + corner_radius，ADR-10）、`TextView<Msg>`、`ViewGroup<Msg>`、`View<Msg>` 枚举与链式构造器（`linear_layout`、`text_view`、`set_text_size/color`、`set_background`、`set_on_click_listener`）；对容器设字号为 no-op + trace。
+
+**Acceptance criteria:**
+- [ ] host `cargo build -p velm` 通过（无 android 依赖）
+- [ ] 默认值、链式设置（含背景色/圆角）、点击消息绑定、no-op 行为均有单测断言
+**Verification:** `cargo test -p velm view`、`cargo clippy -p velm -- -D warnings`
+**Dependencies:** T1（仅需 workspace 存在）
+**Files:** `crates/velm/src/view/{mod.rs,params.rs,text_view.rs,view_group.rs}`、`crates/velm/tests/view.rs`
+**Estimated scope:** M（5 文件）
+
+### Task 5: event 模块（action 纯解码 + FFI 壳）
+
+**Description:** 按 SPEC §7.3 实现 `TouchAction`、`MotionEvent` 与纯函数 `decode_action(raw: u32) -> Option<TouchAction>`（`&0xff` 掩码 + DOWN/MOVE/UP/CANCEL/非法值）；`unsafe from_ndk` 仅在 `cfg(target_os="android")` 编译，负责类型判断与 getX/getY(index=0) 后调用纯函数。常量类型以 T3 清单为准，不保留无依据强转。
+
+**Acceptance criteria:**
+- [ ] host 单测覆盖 4 种 action、带 pointer index 位的掩码值、非法值返回 None
+- [ ] android 构建通过且 FFI 壳内无业务分支
+**Verification:** `cargo test -p velm event`；`cargo clippy -p velm --target aarch64-linux-android -- -D warnings`
+**Dependencies:** T3（符号清单；纯函数部分可先做）
+**Files:** `crates/velm/src/event/{mod.rs,motion_event.rs}`、`crates/velm/tests/event.rs`
+**Estimated scope:** S（3 文件）
+
+### Task 6: layout 测量（margin / density / WrapContent 修正）
+
+**Description:** 按 SPEC §7.4 + ADR-12 实现 `measure_and_layout(root, w_px, h_px, density)`：Dp/sp 乘 density；margin 四向生效；TextView WrapContent 用文本度量（spike 文本方案提供 advance；未接入前用规格近似并隔离为可替换函数）；ViewGroup WrapContent 按子节点与 margin 求和（修正 docs 缺陷）；输出绝对像素坐标。
+
+**Acceptance criteria:**
+- [ ] 单测覆盖：MatchParent/Dp/WrapContent、纵/横排列、margin 偏移、density=2 时 Dp 翻倍、根容器铺满、clamp 不溢出
+**Verification:** `cargo test -p velm layout`
+**Dependencies:** T4（T2 文本度量结论可后补，先用可替换 trait/函数隔离）
+**Files:** `crates/velm/src/layout/{mod.rs,measure.rs}`、`crates/velm/tests/layout.rs`
+**Estimated scope:** S（3 文件）
+
+### Task 7: hit_test DFS
+
+**Description:** 按 SPEC §7.5 实现 `perform_hit_test<Msg: Clone>`：容器 rect 不包含直接排除、子节点逆序探测、容器回落、闭区间边界。
+**Acceptance criteria:**
+- [ ] 单测覆盖：叶子命中/未命中、重叠时后添加者优先、容器自身监听回落、边界点坐标
+**Verification:** `cargo test -p velm hit_test`
+**Dependencies:** T4
+**Files:** `crates/velm/src/engine/{mod.rs,hit_test.rs}`、`crates/velm/tests/hit_test.rs`
+**Estimated scope:** S（3 文件）
+
+### Task 8: app 契约 + 引擎事件状态机（纯逻辑）
+
+**Description:** 按 SPEC §7.6/§3.4 实现 `Activity` trait、`Intent::none()` 占位；定义引擎输入事件枚举（WindowCreated/WindowDestroyed/QueueCreated/QueueDestroyed/Touch(MotionEvent)/Quit）与不依赖 Looper 的状态机 `step(state, event) -> Vec<Action>`（动作：创建/销毁 surface、绑定队列、入队消息、重绘、退出），把「销毁到达顺序任意」「无窗口丢弃重绘」等不变量做成 host 单测。
+**Acceptance criteria:**
+- [ ] 单测覆盖 SPEC §3.4 全路径：窗口先于/晚于队列、销毁后重建、无窗口时消息丢弃策略、Quit 后不再产生动作
+**Verification:** `cargo test -p velm`（全套）
+**Dependencies:** T5、T6、T7
+**Files:** `crates/velm/src/app/{mod.rs,activity.rs,state.rs}`、`crates/velm/src/engine/events.rs`、`crates/velm/tests/state_machine.rs`
+**Estimated scope:** M（5 文件）
+
+### Checkpoint B — 纯逻辑层完成
+
+- [ ] host `cargo test --workspace` 全绿；layout/hit/event/状态机覆盖 ≥85% 行
+- [ ] `cargo fmt --check`、host clippy 零告警
+- [ ] 逻辑泳道代码 grep 不到任何 android FFI 符号
+
+## Phase 2 — 平台与渲染（平台泳道，可与 Phase 1 并行）
+
+### Task 9: platform/window（rwh 0.6 + 所有权 + density）
+
+**Description:** 按 SPEC §7.1、ADR-11/12 实现 `NativeWindowWrapper`：`from_ndk`（acquire）、`Drop`（release）、`configure_buffers`（RGBA_8888，失败返回错误码不 panic）、size/format、rwh 0.6 `HasWindowHandle/HasDisplayHandle`；density 经 AConfiguration 获取并封装为 `ScreenConfig { density, w, h }`。
+**Acceptance criteria:**
+- [ ] android 构建通过；真机日志打印正确宽高/density；重复 acquire/release 平衡（日志/压测无窗口泄漏报错）
+- [ ] rwh 0.6 句柄能被 T10 的 wgpu 接受
+**Verification:** `cargo clippy -p velm --target aarch64-linux-android -- -D warnings`；真机 logcat
+**Dependencies:** T3
+**Files:** `crates/velm/src/platform/{mod.rs,window.rs}`（density 若超过 2 文件上限放 window.rs 内）
+**Estimated scope:** S
+
+### Task 10: render/vello_renderer
+
+**Description:** 按 SPEC §7.8 与 T2 结论实现 `VelloRenderer::new(window,w,h)?`、`resize`、`render(root: &View<Msg>)`：wgpu 29 surface/device（Fifo 呈现、surface 能力自适应格式）、vello 0.10 编码（#121212 清屏、`Background` 圆角矩形、TextView 文本按 text_size/color/computed_rect、中英文字体 fallback）、present 与 OUTDATED/LOST 恢复；`velm::Error`（thiserror）落地。
+**Acceptance criteria:**
+- [ ] 给定一棵硬编码已布局 View 树，真机渲染出与 rect 一致的文本布局
+- [ ] resize/重建 surface 后恢复；surface lost 自动重配不崩
+**Verification:** 设备截图；旋转/后台恢复验证
+**Dependencies:** T2、T9（View 类型可先用最小本地定义，后接 T4）
+**Files:** `crates/velm/src/render/{mod.rs,vello_renderer.rs}`、`crates/velm/src/error.rs`、`crates/velm/src/render/font.rs`
+**Estimated scope:** M（4 文件）
+
+### Task 11: 静态画面接线（两泳道汇合）
+
+**Description:** counter 实现 `Activity`（counter model、on_draw 三行文本 + 两个按钮矩形，ADR-10 视觉）；引擎初版：onCreate 启动引擎线程、WindowCreated 时建 renderer、`on_draw → measure → render` 出首帧；暂不接输入队列。
+**Acceptance criteria:**
+- [ ] 真机启动即见 SC-2 的静态画面（计数 0、+1/-1 按钮）
+- [ ] 回前台/旋转后画面恢复
+**Verification:** 截图比对；logcat 首帧日志
+**Dependencies:** T8、T10
+**Files:** `crates/velm/src/engine/activity_thread.rs`、`examples/counter/src/lib.rs`
+**Estimated scope:** M
+
+### Checkpoint C — 静态画面
+
+- [ ] 真机稳定显示静态 UI；窗口重建路径可用
+- [ ] 与人 review 渲染/布局坐标一致性（文本位置与 computed_rect 对齐）
+
+## Phase 3 — TEA 交互闭环
+
+### Task 12: 回调重写为事件发布 + 引擎线程 Looper
+
+**Description:** 按 SPEC §3.3/§7.7、ADR-09/11 落地：5 个 C 回调只做 acquire/登记/channel 发布；引擎线程 Looper prepare、`AInputQueue_attachLooper`、pollOnce 唤醒；WindowDestroyed/QueueDestroyed 同步 ack（确认 renderer 停绘/不再 getEvent 后回调才返回）；onDestroy 发 Quit 并 join、释放 context；所有 FFI 入口 catch_unwind；非 motion 事件也保证 finishEvent 一次。
+**Acceptance criteria:**
+- [ ] 回调函数内无阻塞循环/无渲染调用（代码评审 + 日志时序）
+- [ ] 启停 20 次：队列/窗口销毁回调均被执行、线程 join 成功、无 UAF/ANR
+**Verification:** `adb` 压测脚本 + logcat 时序检查
+**Dependencies:** T11
+**Files:** `crates/velm/src/engine/{activity_thread.rs,app_context.rs}`、`crates/velm/src/platform/window.rs`（acquire/release 若 T9 未含）
+**Estimated scope:** M
+
+### Task 13: 输入 → hit-test → update → 重绘闭环
+
+**Description:** 按 SPEC §7.7/§8.2 接线：事件取出→MotionEvent 解析→`on_touch_event` 拦截优先；否则 ActionDown 复用「当前帧已布局 View 树」做 hit-test（避免 docs 的一触双重建）；消息 VecDeque FIFO；逐个 update、合并一次重绘；measure(density) → render；MOVE/UP/CANCEL 仅走拦截路径；空白处不重绘。
+**Acceptance criteria:**
+- [ ] SC-3：点 +1/-1 计数正确，连点 20 次数字准确
+- [ ] SC-4：空白无反应、按住不连发；拦截返回 Some 时不触发 hit-test
+- [ ] 每个输入事件恰好 finishEvent 一次
+**Verification:** 手工点击 + 录屏计数；logcat 消息/重绘日志核对
+**Dependencies:** T12
+**Files:** `crates/velm/src/engine/activity_thread.rs`、`crates/velm/src/engine/events.rs`（如需）
+**Estimated scope:** M
+
+### Checkpoint D — 端到端闭环
+
+- [ ] SC-2/3/4 通过；交互路径 clippy/test 全绿
+
+## Phase 4 — 硬化与交付
+
+### Task 14: 生命周期压测与缺陷修复
+
+**Description:** 编写 adb 脚本化压测：Home/返回/回前台、旋转各 ≥20 次，连续启停 100 次；验证 Model 跨窗口重建保留（SC-5）、引擎线程退出干净（SC-6）、无 surface/input 相关 abort 与 ANR；修复发现的问题。
+**Acceptance criteria:**
+- [ ] 压测脚本可重复运行且全程零崩溃/零 ANR；logcat 无 UAF/非法指针错误
+- [ ] 回前台计数状态保留并可继续交互
+**Verification:** `scripts/stress_lifecycle.sh` 输出与日志归档
+**Dependencies:** T13
+**Files:** `scripts/stress_lifecycle.sh`、按缺陷触及的 engine/render 文件（每轮修复控制范围）
+**Estimated scope:** M
+
+### Task 15: 打包配置与构建文档
+
+**Description:** 固化 cargo-apk2 配置（应用名、minSdk 24、arm64，P1 x86_64）、`AndroidManifest.xml` 语义（NativeActivity、lib_name、hasCode）、release 构建；README 写清工具链（rustup target、NDK r27、cargo-apk2 安装）、构建/安装/logcat 命令链（SC-9，干净环境可复现）。
+**Acceptance criteria:**
+- [ ] 按 README 在干净 shell 中从零完成安装运行
+- [ ] release APK 可安装启动
+**Verification:** 严格照 README 手工走一遍
+**Dependencies:** T14
+**Files:** `examples/counter/Cargo.toml`（metadata）、`AndroidManifest.xml`（若 cargo-apk2 需要外置）、`README.md`、`scripts/build_run.sh`
+**Estimated scope:** M
+
+### Task 16: 质量门禁与文档归位
+
+**Description:** 双 target clippy `-D warnings`、fmt、纯逻辑覆盖率 ≥85%、模块级 rustdoc（pub 项与 unsafe Safety 契约齐全）；SPEC/PLAN/DECISIONS 状态更新（决议落地勾选、P1 缺口登记 SC-10~13）；demo 视觉按 ADR-10 收尾（按压态除外）。
+**Acceptance criteria:**
+- [ ] SPEC §12 的 SC-1~SC-9 逐项有证据（命令输出/截图/日志）归档
+- [ ] 三文档与最终代码一致；P1 项明确列入 v1.1
+**Verification:** 全量门禁命令 + 交付说明
+**Dependencies:** T15
+**Files:** `crates/velm/src/**`（文档注释/小修）、`docs/SPEC.md`、`docs/PLAN.md`、`docs/DECISIONS.md`
+**Estimated scope:** S
+
+### Checkpoint E — v1 完成评审
+
+- [ ] SC-1 ~ SC-9 全部满足且证据齐全
+- [ ] 人 review 批准；进入 v1.1 backlog（SC-10~13：margin 精修/Intent 执行器/状态恢复/x86_64/文本精排/Choreographer）
+
+---
+
+## Risks and Mitigations
+
+| 风险 | 级别 | 触发信号 | 缓解 |
+|---|---|---|---|
+| vello 0.10 Android API 与预期不符（surface 创建/文本 API 变动） | 高 | T2 无法在时间盒内出画面 | T2 是最高优先 spike、先于一切正式开发；失败则回 DECISIONS 评估 git 固定版/其他渲染路径，损失仅限 spike |
+| glifo 0.2 与 vello 0.10 不配套 | 中 | T2 文本 POC 编译/运行失败 | 退回 skrifa 直绘（v1 单行文本足够），glifo 列入 v1.1 |
+| raw-ndk-sys 缺 attachLooper/density 等符号 | 中 | T3 符号清单缺失 | 立即切 ndk-sys 0.6（已在 lock），ADR-02 已预留 |
+| 销毁时序竞态（surface/queue 释放后访问） | 高 | T14 压测偶发崩溃 | T8 状态机单测覆盖乱序；T12 同步 ack；T14 专项压测 |
+| wgpu 29 与其他依赖版本冲突 | 中 | T1/T10 依赖解析失败 | 以 vello 0.10 的 `^29.0.3` 为唯一基线，不混用 30 |
+| cargo-apk2 workspace 支持问题 | 中 | T1 打不出包 | ADR-04 预留 cargo-ndk + 手写打包回退；记录后继续 |
+| 坐标系/density 偏差导致点击错位 | 中 | 真机点击与视觉偏移 | ADR-12 统一像素坐标；T6 单测 + 多分辨率真机验证 |
+| panic 跨 FFI | 中 | 任何设备 abort | T12 catch_unwind 统一入口；禁回调 unwrap |
+| 范围蔓延（ort/rstar/redb 回流） | 中 | 实现中出现 AI/存储诉求 | ADR-01 + SPEC Boundaries：另开 spec，不进 v1 |
+
+## Open Questions（留给 spike/实现中回答，不阻塞计划批准）
+
+1. T2：glifo 0.2 还是 skrifa 直绘（ADR-06 时间盒）？NotoSansCJK `.ttc` 的 collection index 取值？
+2. T3：raw-ndk-sys 符号清单结果；若切 ndk-sys，事件常量类型差异清单？
+3. T10：vello 0.10 在 Android 的 surface 格式/呈现模式实测组合？
+4. T15：cargo-apk2 对 workspace 内 cdylib package 的具体 metadata 字段？
+
+## 计划出口检查（planning skill）
+
+- [x] 每个任务有验收条件与验证步骤
+- [x] 依赖关系明确、高风险任务前置（T2/T3）
+- [x] 无超过 5 文件的任务（最大 M=5）
+- [x] 每 2~3 个任务设检查点（A~E），其中 CP-A/CP-C/CP-E 需人评审
+- [x] 标注并行泳道与必须串行列
+- [ ] 人类 reviewer 批准本计划后进入 TASKS 阶段（逐任务展开为可执行任务卡）

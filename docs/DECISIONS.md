@@ -1,0 +1,217 @@
+# Velm 技术决策记录（ADR）
+
+- **日期**：2026-09-21
+- **状态**：已决策，待人类 review（review 后作为 PLAN/IMPLEMENT 的约束基线）
+- **关联文档**：`docs/SPEC.md`（§0 假设、§4 技术栈、§14 Open Questions）、`docs/PLAN.md`
+- **决策原则**：v1 只交付「零胶水 NativeActivity + TEA + LinearLayout + 文本/点击 + vello 渲染」最小闭环；一切与闭环无关、docs 无需求、增加构建/设备风险的依赖与能力一律推迟。
+
+本机环境基线（已核实）：rustc/cargo 1.95.0（支持 edition 2024）；已装 target `aarch64-linux-android`、`armv7-linux-androideabi`、`x86_64-linux-android`；NDK r26.3 与 r27.3 均在 `~/Library/Android/sdk/ndk/`；已装 `cargo-ndk`，未装 apk/xbuild 类工具。
+
+---
+
+## ADR-01：v1 移除 ort / rstar / redb / jni / image / rayon / serde（对应 Q1）
+
+**决策**
+
+从 `Cargo.toml` 移除以下依赖，v1 框架与 demo 均不使用：`ort`、`rstar`、`redb`、`jni`、`image`、`rayon`、`serde`、`serde_json`。保留 `crossbeam-channel`、`pollster`、`bytemuck`、`log`。
+
+**理由**
+
+- 两份 docs（PRD/架构）对这些 crate **零需求描述**，属于未文档化的方向暗示，不能反向当成需求。
+- `ort`（ONNX Runtime）会拉入原生运行时（数十 MB .so）、把 minSdk 抬到 28、显著拖慢交叉编译，与「轻量 UI 框架」定位冲突。
+- `jni` 与 PRD G1「零胶水、零 JNI 业务开销」直接冲突；保留它会持续诱导绕过定位。
+- `rstar`（空间索引）在 v1 仅数十节点的 View 树中没有消费方（DFS hit-test 足够）；`redb`/`serde*` 在 SavedInstanceState 推迟到 P1 后无用途；`image` 在没有图片视图时无用途；`rayon` 在 v1 单引擎线程模型下无并行任务。
+- 依赖越少，android 交叉编译面越小、越容易先跑通闭环（fail fast）。
+
+**否决方案**
+
+- 「先留着以后用」：否决。未使用的依赖是负债而非资产——升级 wgpu/NDK 时它们会成为编译失败面，且模糊框架边界。未来需要时按新 spec 单独引入（均为可逆决策）。
+
+**后续**：若确认产品规划包含 AI 推理/空间检索/本地持久化，各自单开 spec 与模块（如 `velm-ml`、持久化层），不进框架核心。
+
+---
+
+## ADR-02：NDK 绑定保留 raw-ndk-sys 0.1.2，符号缺口在 spike 中验证（对应 Q2）
+
+**决策**
+
+v1 使用 `raw-ndk-sys = "0.1.2"`（Cargo.lock 已验证：自包含、无传递依赖）。在 PLAN Phase 0 的 spike 中核对以下符号是否齐备：`AInputQueue_attachLooper/detachLooper`、`ALooper_prepare/wake/pollOnce`、`ANativeWindow_acquire/release`、`AConfiguration_fromAssetManager/getDensity`、`AMotionEvent_*`、（P1 预留）`AChoreographer_*`。若有关键缺口，切换到已在 lock 中作为传递依赖存在的 `ndk-sys 0.6`。
+
+**理由**
+
+- docs 全部 FFI 代码按 raw-ndk-sys 的符号风格编写，沿用迁移成本最低。
+- raw-ndk-sys 是纯 bindgen 全量绑定、无 jni-sys 等附加依赖（实测 lock 中其 dependencies 为空），符合「零胶水」。
+- ndk-sys 0.6（rust-mobile 维护、绑定 NDK r28 头、11769913）更新但属于「sys 绑定」，同样不是胶水层，切换不违反定位；作为确定的兜底。
+
+**否决方案**
+
+- 直接上 `ndk`/`android-activity` 高层 crate：否决，违反零胶水核心定位（SPEC G1、Boundaries Never）。
+
+---
+
+## ADR-03：渲染栈改用 crates.io 正式版 vello 0.10 + wgpu 29，放弃 git 开发快照（对应 Q3）
+
+**决策**
+
+- 放弃现状 `Cargo.toml` 中的 git 源 `vello_gpu`/`vello_common`（rev `5c22cff…`，0.2 开发期拆分形态）。
+- 改用 crates.io 正式发布的 **`vello = "0.10"`**（默认启用 wgpu feature），与之统一使用 **`wgpu = "29"`**（vello 0.10 要求 `wgpu ^29.0.3`），`peniko = "0.6"`、`skrifa = "0.44"` 由 vello 带入、必要时在框架中显式声明同版本。
+- `raw-window-handle` 维持现状 **0.6**。
+
+**理由（证据）**
+
+- crates.io API 实测 vello 0.10.0（2026-08 发布）依赖：`peniko ^0.6.1`、`skrifa ^0.44.0`、`wgpu ^29.0.3`(optional/default)、`vello_encoding ^0.10`、`thiserror ^2`、`bytemuck ^1.25`——与现状 lock 中 peniko 0.6.1、skrifa 0.44、bytemuck 1.25 完全同代，仅 wgpu 需从 30 降到 29。
+- 现状 git 快照的 `vello_common 0.2` 在 crates.io 上已被重新定位（其页面说明 GPU 版 Vello 不使用该 crate，它服务于 Vello CPU 线），说明该拆分形态已被上游重组；固定一个被重组的开发快照等于锁死在无文档、无升级路径的状态。
+- 框架渲染器代码为零（docs 中 `vello_renderer.rs` 只有文件名），现在切正式版没有任何迁移成本，反而能拿到完整 docs.rs/示例与稳定 API。
+- wgpu 30→29 的降级只影响尚不存在的代码；版本必须与 vello 内部统一，否则 Surface/Device 类型不匹配。
+
+**否决方案**
+
+- pin git rev 继续用 0.2 快照：否决，理由如上（无文档、形态已被上游放弃、无法获得补丁）。
+- 强行 wgpu 30 + vello 0.10：否决，semver 大版本不一致会导致类型分裂。
+
+**证据**：<https://crates.io/crates/vello/0.10.0>、<https://crates.io/api/v1/crates/vello/0.10.0/dependencies>、<https://crates.io/crates/vello_common/0.2.0>
+
+---
+
+## ADR-04：打包链使用 cargo-apk2；cargo-ndk 作为仅产出 .so 的备用（对应 Q4）
+
+**决策**
+
+- v1 开发闭环（编译→打包 APK→安装→logcat）使用 **cargo-apk2（≥1.4）**：无需 Gradle、原生支持以 `NativeActivity` 提供的 cdylib、2026-08 仍活跃维护。
+- 已安装的 `cargo-ndk` 保留，用于 CI/只产出 `.so` 的场景；未来需要 AAB/上 Google Play 时再评估 Gradle 或 xbuild。
+- Phase 0 spike 先验证 cargo-apk2 对 workspace 中独立 cdylib package（见 ADR-07）的打包与 `AndroidManifest` 元数据配置；若 cargo-apk2 对 workspace 支持有阻塞，回退到「cargo-ndk 产 .so + 最小手写 manifest/aapt 打包」并记录。
+
+**理由（证据）**
+
+- 旧 cargo-apk 最后版本停在 0.10.0（2023-11），其页面明确警告「已被 xbuild 取代」，不可作为新工程基线。
+- cargo-apk2 1.4.0（2026-08-27 更新）自我定位即为「cargo-apk 停滞后继任者、最小配置、无 Gradle、尤其适合通过 NativeActivity 提供的应用」，与本项目形态精确匹配。
+- xbuild 能力更全（含 Apple/AAB）但概念面更大；Gradle 路线需要 JVM 工程维护，与零胶水/最小闭环目标不符，推迟到有上架需求时。
+
+**证据**：<https://crates.io/crates/cargo-apk2/1.4.0>、<https://crates.org.cn/crates/cargo-apk>（废弃声明）、<https://docs.rs/crate/cargo-xbuild/0.5.34>
+
+---
+
+## ADR-05：v1 手写 LinearLayout 布局，不引入 taffy（对应 Q5）
+
+**决策**
+
+v1 布局为手写 LinearLayout（纵向/横向），实现 SPEC §7.4 的修正版算法（margin 生效、density 换算、容器 WrapContent 按子节点求和）。不引入 taffy；完整 Flexbox（weight/justify/align/grow）列入后续版本，届时再评估 taffy 版本与 `LayoutParams` 扩展。
+
+**理由**：v1 只有顺序排列的文本/按钮；taffy 在现状 lock 中不存在，引入它会新增一个需要适配的布局抽象并推迟闭环；手写算法约一个文件、可 host 单测、与 Android 早期 LinearLayout 心智模型一致。
+
+---
+
+## ADR-06：文本栈以 vello 0.10 官方用法为准，Phase 0 时间盒 spike 决定 glifo vs skrifa 直绘（对应 Q6）
+
+**决策**
+
+- v1 必须能渲染**英文与中文**文本（SC-13 中「真实文本度量/中文」提级为 P0 的显示部分；自动换行仍为 P1）。
+- Phase 0 渲染 spike 中用 ≤1 个时间盒对比两条路径，并默认采用 **vello 0.10 官方 examples 的文本做法**：
+  1. **glifo 0.2（crates.io 已独立发布，linebender 官方文本 API，MSRV 1.88，本机 1.95 满足）**——若确认它与 vello 0.10 配套顺畅，优先采用（排版/换行能力完整）；
+  2. 否则用 vello 0.10 自带的 **skrifa 0.44** 直接加载字形并填入 vello Scene（最小依赖路径，v1 文本场景简单：单行文本、显式字号/颜色）。
+- 字体来源：Android 系统字体 `/system/fonts/Roboto-Regular.ttf`（英文）与 `/system/fonts/NotoSansCJK-Regular.ttc`（中文 fallback）；spike 需验证 skrifa/glifo 读取 `.ttc` collection 的方式（必要时用 Roboto + Noto 双字体 fallback 链）。
+- WrapContent 文本宽度：spike 选定文本栈后，用其 advance 度量替换 SPEC §7.4 的 `chars*size*0.6` 近似（英文），中文按全角度量。
+
+**理由（证据）**
+
+- vello 0.10 直接依赖 `skrifa ^0.44`（字形解析，覆盖 CJK 字形取用）；现状 git 快照中的 glifo 0.3 是 in-tree 开发形态，而 crates.io 上 glifo 已独立到 0.2 track（2026-08 底仍在更新）——两者配套关系必须以实测为准，不能凭文档臆断。
+- 文本绘制是渲染器之外最大的不确定点，按 planning 高风险先行原则放进首个 spike，避免后期返工布局/渲染接口。
+
+**证据**：<https://crates.io/crates/glifo/versions>、<https://crates.io/api/v1/crates/vello/0.10.0/dependencies>
+
+---
+
+## ADR-07：Cargo workspace 划分——框架 rlib + 独立 cdylib demo（对应 Q7）
+
+**决策**
+
+根 `Cargo.toml` 转为 workspace 清单：
+
+```text
+velm/
+├── Cargo.toml            # [workspace] members = ["crates/velm", "examples/counter"]
+├── crates/
+│   └── velm/             # 框架库：crate-type = ["rlib"]（纯 Rust，供测试/复用）
+│       └── src/...
+└── examples/
+    └── counter/          # Demo 应用：crate-type = ["cdylib"]，依赖 velm
+        ├── Cargo.toml
+        └── src/lib.rs    # MainActivity + #[no_mangle] ANativeActivity_onCreate
+```
+
+- 框架库自身**不**导出 `ANativeActivity_onCreate`（该符号属于应用）；框架提供 `velm::run_native_activity::<A>(...)` 启动函数。
+- 移除现状 `src/main.rs`（Hello world 脚手架）。
+
+**理由**：Android NativeActivity 只能加载 cdylib，而框架必须同时可在 host 编译测试（FFI 模块靠 cfg(target_os) 隔离）；单 package 同时承载框架与 demo 会让 rlib/cdylib、host 测试与 C 入口互相污染。workspace 是 android-activity 等同类项目的通行结构。
+
+**否决方案**：demo 放 `examples/` 单文件（cargo examples 是 bin target，无法作为 cdylib 被 NativeActivity 加载）；业务写进框架 lib.rs（docs 现状，无法复用/无法承载多 demo）。
+
+---
+
+## ADR-08：minSdk 24、NDK r27、P0 arm64 + P1 x86_64（对应 Q8）
+
+**决策**
+
+- **minSdk 24**（Android 7.0）：wgpu on Android 走 Vulkan，Vulkan 支持的事实门槛为 API 24；移除 ort 后不再有 api-28 约束。
+- NDK 使用本机已装的 **r27.3.13750724**（r26.3 作为备用）。
+- ABI：P0 `arm64-v8a`（aarch64-linux-android）；P1 `x86_64`（模拟器调试，target 本机已装）；不做 `armeabi-v7a`（32 位，除非有明确设备需求）。
+
+**理由**：API 24 覆盖绝大多数在网设备且满足 GPU 栈要求；双 ABI 覆盖真机+模拟器；32 位增加 CI 矩阵而无明确收益。
+
+---
+
+## ADR-09：v1 按需渲染 + Looper 唤醒，Choreographer 列 P1（对应 Q9）
+
+**决策**
+
+v1 采用**按需渲染**：仅在状态变更（产生 Message 并 update）、窗口创建/尺寸变化时请求重绘；引擎线程通过 `ALooper_prepare(ALLOW_NON_CALLBACKS)` + `AInputQueue_attachLooper` 由输入事件唤醒，`ALooper_pollOnce` 保留 16ms 超时作为兜底与帧率上限，不做持续 rAF 循环。`AChoreographer_*` 驱动的 vsync 持续渲染（动画前提）列入 P1。
+
+**理由**：UI 框架 v1 无动画，按需渲染省电且模型简单；输入队列 attach 到引擎线程自己的 Looper 后，事件到达即唤醒，不依赖固定睡眠轮询（修正 docs 的 16ms 盲轮询）。
+
+---
+
+## ADR-10：视觉基线——深色背景 + 圆角矩形按钮（对应 Q10）
+
+**决策**
+
+- 窗口清屏色 `#121212`（Material dark surface）。
+- demo 按钮为圆角矩形填充 + 居中文字：「+1」绿色（`#2E7D32` 底 / 白字或沿用 docs 的绿字，spike 后按可读性定）、「-1」红色（`#C62828`）；计数文本 28sp 白色；按钮 20sp。
+- 矩形同时作为 hit target 的视觉反馈（用户能看到可点区域）；v1 不做按压态动画（P1）。
+
+**理由**：PRD 无视觉稿；纯文本按钮在深色背景上 hit target 不可见，圆角矩形是 vello 最基础能力（filled rounded rect），成本极低且让 SC-3 可肉眼验收。
+
+---
+
+## ADR-11（衍生）：错误处理与 FFI 安全边界
+
+**决策**
+
+- 框架定义 `velm::Error`（`thiserror`，lock 中已有 thiserror 2.x）：覆盖 NDK 返回码、surface/device 创建失败、surface lost/outdated；可恢复错误（surface 失效）重配重试，不可恢复错误记录后停止引擎线程。
+- 所有 C 回调入口与引擎线程主函数用 `std::panic::catch_unwind` 包裹：panic 信息经 logcat error 输出后走受控退出（继续运行会破坏 FFI 不变量）；回调中禁止 `unwrap/expect`（入口空指针断言保留 assert，属编程失败，接受 abort 语义）。
+- `ANativeWindow` 所有权：回调交付窗口时 `ANativeWindow_acquire`，销毁同步点确认渲染器停止访问后 `ANativeWindow_release`（SPEC §3.3 同步协议的具体实现手段）。
+
+## ADR-12（衍生）：density 与坐标系
+
+**决策**
+
+- density 通过 `AConfiguration_fromAssetManager(activity->assetManager)` + `AConfiguration_getDensity` 获取（dpi/160.0）；拿不到时兜底 1.0 并打一次 warn（ADR-02 spike 验证 raw-ndk-sys 符号）。
+- 全链路统一**物理像素绝对坐标**：NDK MotionEvent 的 x/y 本就是像素；布局输出像素；Dp/sp 乘 density。hit-test 前不做额外换算。
+
+---
+
+## 决策汇总表（SPEC §14 关闭对照）
+
+| Q | 议题 | 决策 | ADR |
+|---|---|---|---|
+| Q1 | ort/rstar/redb/jni 等 | v1 全部移除 | ADR-01 |
+| Q2 | NDK 绑定 | raw-ndk-sys 0.1.2 + spike 验符号，兜底 ndk-sys 0.6 | ADR-02 |
+| Q3 | vello 来源/版本 | crates.io vello 0.10 + wgpu 29，弃 git 快照 | ADR-03 |
+| Q4 | 打包链 | cargo-apk2（无 Gradle），cargo-ndk 备用 | ADR-04 |
+| Q5 | 布局引擎 | 手写 LinearLayout，不引 taffy | ADR-05 |
+| Q6 | 文本栈 | spike 定 glifo 0.2 / skrifa 直绘，系统字体，中英必达 | ADR-06 |
+| Q7 | crate 划分 | workspace：crates/velm(rlib) + examples/counter(cdylib) | ADR-07 |
+| Q8 | minSdk/ABI/NDK | minSdk 24、NDK r27、arm64 P0 / x86_64 P1 | ADR-08 |
+| Q9 | 帧率模型 | 按需渲染 + Looper 唤醒；Choreographer P1 | ADR-09 |
+| Q10 | 视觉基线 | #121212 背景 + 圆角矩形按钮 | ADR-10 |
+| — | 错误/FFI 安全 | thiserror 领域错误 + catch_unwind + acquire/release | ADR-11 |
+| — | density/坐标 | AConfiguration_getDensity，全链路像素坐标 | ADR-12 |
