@@ -12,3 +12,6 @@
 //! - `engine`：NativeActivity 回调、引擎线程、命中测试（T3/T7/T8/T12）
 //! - `platform`：ANativeWindow 封装与 raw-window-handle（T9）
 //! - `render`：vello/wgpu 渲染器（T2/T10）
+
+#[cfg(target_os = "android")]
+pub mod engine;

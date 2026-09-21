@@ -1,8 +1,17 @@
 # 本机 NDK r27 linker（ADR-08：minSdk 24）。
 # cargo-apk2 / cargo-ndk 会自行探测 NDK；此配置保证裸
 # `cargo build --target aarch64-linux-android` 也能直接链接。
+#
+# 额外 -L API 29 stub 目录：raw-ndk-sys 0.1.2 的 build.rs 无条件链接
+# aaudio/amidi/neuralnetworks 等 API 26+ 才有的库；链接行自带
+# --as-needed，未引用符号的库不会进入 DT_NEEDED，故 minSdk 24 运行时
+# 不受影响（已用 readelf 核验，见 docs/DECISIONS.md ADR-02）。
+NDK = "/Users/paulzhang/Library/Android/sdk/ndk/27.3.13750724/toolchains/llvm/prebuilt/darwin-x86_64"
+
 [target.aarch64-linux-android]
 linker = "/Users/paulzhang/Library/Android/sdk/ndk/27.3.13750724/toolchains/llvm/prebuilt/darwin-x86_64/bin/aarch64-linux-android24-clang"
+rustflags = ["-L", "/Users/paulzhang/Library/Android/sdk/ndk/27.3.13750724/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/lib/aarch64-linux-android/29"]
 
 [target.x86_64-linux-android]
 linker = "/Users/paulzhang/Library/Android/sdk/ndk/27.3.13750724/toolchains/llvm/prebuilt/darwin-x86_64/bin/x86_64-linux-android24-clang"
+rustflags = ["-L", "/Users/paulzhang/Library/Android/sdk/ndk/27.3.13750724/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/lib/x86_64-linux-android/29"]
