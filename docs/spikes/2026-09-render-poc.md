@@ -3,7 +3,7 @@
 **日期**：2026-09-22
 **对应任务**：PLAN Task 2（渲染 spike）、ADR-03（渲染栈版本）、ADR-06（文本栈，Slice 3 决策）
 **设备**：x86_64 / API 36 模拟器（AVD velm_test，swiftshader_indirect，320×640，density 160）
-**状态**：Slice 1 ✅ ｜ Slice 2 ✅ vello Scene ｜ Slice 3 ✅ 文本（skrifa 直绘）｜ Slice 4 ⬜ resize
+**状态**：Slice 1 ✅ ｜ Slice 2 ✅ vello Scene ｜ Slice 3 ✅ 文本（skrifa 直绘）｜ Slice 4 ✅ resize（T2 spike 完成，待 CP-A 人类 review）
 
 本 spike 以消除渲染路径不确定性为目标，代码直接落在框架 `crates/velm/src/render/`
 （T10 `VelloRenderer` 的前身），允许原型质量，但每个关键 API 与设备行为必须真机实证。
@@ -17,7 +17,7 @@
 | 1 | `ANativeWindow` → rwh 0.6 → wgpu 29 surface（Vulkan）→ adapter/device → 清屏 present | 模拟器软件 Vulkan 是否可用、wgpu 29 API 变迁 | ✅ 2026-09-22 |
 | 2 | 引入 vello 0.10（`features=["wgpu"]`）+ peniko 0.6，Scene 清屏 + 圆角矩形 | vello 0.10 真实 API 序列、limits 要求 | ✅ 2026-09-22 |
 | 3 | glifo 0.2 vs skrifa 0.44 时间盒；Roboto + NotoSansCJK 中英文 | 文本栈选型、ttc index、AssetManager 读字体 | ✅ 2026-09-22（定稿 skrifa，ADR-06） |
-| 4 | `onNativeWindowResized` → surface 重配；旋转不崩；ADR-06 定稿 | resize 时序、旧帧失效处理 | ⬜ |
+| 4 | `onNativeWindowResized` → surface 重配；旋转不崩；ADR-06 定稿 | resize 时序、旧帧失效处理 | ✅ 2026-09-22 |
 
 ---
 
@@ -381,3 +381,83 @@ index 4: Noto Sans CJK HK
 3. 字体路径/ttc index 作为常量；T15 评估在缺少某字体的设备上的 fallback 策略
    （API24 AOSP/主流机型均含 Roboto + NotoSansCJK）。
 4. 不做 kerning/复杂 shaping/换行（P1）；若后续需要，重新评估 glifo/parley（ADR-06）。
+
+---
+
+## 5. Slice 4：窗口 resize（旋转）与 surface 重配（✅ 真机通过）
+
+### 5.1 回调与消息链路
+
+- 绑定第 6 个回调 `ANativeActivityCallbacks::onNativeWindowResized`，签名
+  `unsafe extern "C" fn(activity, window: *mut ANativeWindow)`。
+- **resized 不改变窗口所有权**：回调里 `window` 指针与 `onNativeWindowCreated` 相同
+  （实测旋转全程指针不变），主线程**不 acquire**，只 `ANativeWindow_getWidth/getHeight`
+  读新尺寸，发 `EngineMsg::WindowResized{width,height}` + `ALooper_wake`。
+- 引擎线程收到后对当前 `VelloRenderer::resize(w,h)`；渲染器未建立（初始化失败）时忽略。
+- 旋转过程中系统可能先报一次与当前相同的尺寸（实测横屏切换前先报 320×640）；
+  `VelloRenderer::resize` 内部判断尺寸未变则直接返回，天然幂等。
+
+### 5.2 configChanges：旋转走 resize 而非 Activity 重建
+
+cargo-apk2（ndk-build2 1.4.1）生成的 NativeActivity，其 Activity 元素
+`android:configChanges` **默认即 `"orientation|keyboardHidden|screenSize"`**
+（`ndk-build2 manifest::default_config_changes`，无需在 Cargo.toml 配置）。因此旋转时
+Activity 不销毁重建、surface 不销毁，只触发 `onNativeWindowResized`，正是要验证的路径。
+
+### 5.3 VelloRenderer::resize 做了什么
+
+1. 更新 `config.width/height` 并 `surface.configure` 重配 swapchain；
+2. **重建 vello 中间纹理**（`create_vello_target`：Rgba8Unorm + STORAGE|TEXTURE，
+   尺寸必须随窗口变，否则 vello 仍按旧尺寸光栅化）；
+3. 立即补一帧（新尺寸 base_color 清屏铺满，避免旋转后残留/黑边）。
+
+取帧枚举对 `Outdated/Lost` 的完整重建路径在按需渲染模型下由「下一次 resize/重绘」
+自然覆盖（configure 即标记旧 swapchain image 失效）；T10 仍按 §2.6 第 4 条保留
+Outdated/Lost 显式重建。
+
+### 5.4 真机验证（模拟器旋转）
+
+旋转手段（AVD 无传感器，用系统设置强制）：
+```
+adb shell settings put system accelerometer_rotation 0   # 关自动旋转
+adb shell settings put system user_rotation 1            # 1=横屏 90°；0=竖屏
+```
+
+竖屏 320×640 启动 → 横屏：日志
+`onNativeWindowResized … 640x320`（同一 window 指针）→ 引擎 `窗口 resize：640x320`；
+横屏截图 #121212 背景**完整铺满 640×320、无黑边/无旧帧残留/无拉伸**（硬编码的矩形/
+文字仍按固定绝对坐标，横屏偏左上、矩形底部出界，属 POC 预期，自适应布局是 T6）。
+再转回竖屏：`Resized … 320x640`，画面完整恢复。旋转后 BACK：release 窗口 + 引擎
+join 干净，**0 原生崩溃、0 交换链/渲染错误**。截图 `/tmp/velm_resize_{landscape,
+portrait2}.png`（临时非交付物）。
+
+### 5.5 对 T10/T12/T14 的约束
+
+1. resize 必须**同时**重配 surface 与重建 vello 中间纹理并补帧，三者缺一不可。
+2. `onNativeWindowResized` 不触碰窗口所有权（不 acquire/release），与
+   Created/Destroyed 的 acquire/release 协议独立；只有 Destroyed 才 release。
+3. resize 消息走控制通道、引擎线程串行处理，与帧渲染同线程，无需额外同步；
+   连续多次 Resized 以最新尺寸 configure 即可（幂等、可合并）。
+4. T14 生命周期压测应包含「竖→横→竖→BACK」与旋转中连续 Resized 的场景。
+
+---
+
+## 6. T2 spike 总结（CP-A 门禁输入）
+
+四个切片全部真机通过，T2 计划要消除的不确定性均已闭环：
+
+| 风险点 | 结论 |
+|---|---|
+| 模拟器软件 Vulkan 可用性 | ✅ SwiftShader (Subzero) Vulkan 可用，wgpu29 全链路通（§2.3） |
+| ranchu debug_utils 段错误 | ✅ `DISCARD_HAL_LABELS` 绕过（§2.4） |
+| wgpu 29 API 变迁 | ✅ 8 步真实序列已记录（§2.2） |
+| vello 0.10 接入方式 | ✅ 中间纹理 + TextureBlitter，无 render_to_surface（§3.2） |
+| 色彩管线 | ✅ 全链路非 sRGB Rgba8Unorm，vello 负责 sRGB 编码（§3.3） |
+| limits | ✅ `Limits::default()`（§3.4） |
+| 文本栈选型 | ✅ skrifa 0.44 直绘，glifo 面向新栈不适用（ADR-06、§4） |
+| 中英文 | ✅ Roboto + Noto SC(ttc#2) 逐字符回退（§4） |
+| resize/旋转 | ✅ Resized 回调 + surface/中间纹理重配（§5） |
+
+**仍未覆盖（留待后续任务/真机）**：arm64 真机动态验证（当前为 x86_64 模拟器动态 +
+aarch64 静态编译/clippy 绿）；Outdated/Lost 的运行时真实触发；按需渲染的事件驱动
+重绘（当前每状态变化渲染，T12/T13 接入）。

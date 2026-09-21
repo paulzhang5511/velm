@@ -58,6 +58,11 @@ enum EngineMsg {
     },
     /// 引擎停止使用窗口并 release 后回执，主线程才从销毁回调返回。
     WindowDestroyed(NdkPtr<ANativeWindow>, Sender<()>),
+    /// 同一窗口尺寸变化（旋转/分屏），window 指针不变、所有权不变。
+    WindowResized {
+        width: i32,
+        height: i32,
+    },
     Quit,
 }
 
@@ -129,12 +134,13 @@ pub unsafe fn bootstrap(
         // SAFETY: 同上，callbacks 在 Activity 生命周期内有效。
         let callbacks: &mut ANativeActivityCallbacks = unsafe { &mut *(*activity).callbacks };
         callbacks.onNativeWindowCreated = Some(native_window_created);
+        callbacks.onNativeWindowResized = Some(native_window_resized);
         callbacks.onNativeWindowDestroyed = Some(native_window_destroyed);
         callbacks.onInputQueueCreated = Some(input_queue_created);
         callbacks.onInputQueueDestroyed = Some(input_queue_destroyed);
         callbacks.onDestroy = Some(on_destroy);
 
-        log::info!("已绑定 5 个生命周期回调，引擎线程已启动");
+        log::info!("已绑定 6 个生命周期回调，引擎线程已启动");
     }));
 
     if result.is_err() {
@@ -209,6 +215,14 @@ fn engine_main(rx: Receiver<EngineMsg>, looper_slot: Arc<AtomicPtr<ALooper>>) {
                             log::warn!("WindowDestroyed 与当前持有窗口不一致");
                         }
                         let _ = ack.send(());
+                    }
+                    EngineMsg::WindowResized { width, height } => {
+                        // 同一窗口尺寸变化：重配 swapchain/中间纹理并重绘；
+                        // 渲染器尚未建立（初始化失败）时忽略。
+                        if let Some(gpu) = renderer.as_mut() {
+                            log::info!("窗口 resize：{width}x{height}");
+                            gpu.resize(width.max(0) as u32, height.max(0) as u32);
+                        }
                     }
                     EngineMsg::Quit => {
                         renderer.take();
@@ -421,6 +435,37 @@ unsafe extern "C" fn native_window_destroyed(
             // 阻塞到引擎线程 release 且不再使用该窗口（SPEC §3.3 同步销毁）。
             let _ = ack_rx.recv();
             log::info!("onNativeWindowDestroyed 同步 ack 已收到");
+        }
+    });
+}
+
+unsafe extern "C" fn native_window_resized(
+    activity: *mut ANativeActivity,
+    window: *mut ANativeWindow,
+) {
+    guard(|| {
+        // SAFETY: 回调在主线程、activity/window 有效；resized 不改变窗口所有权，
+        // 同一 ANativeWindow 仍由引擎线程持有，此处只读取新尺寸并通知，不 acquire。
+        let Some(engine) = (unsafe { engine_of(activity) }) else {
+            return;
+        };
+        if window.is_null() {
+            return;
+        }
+        // SAFETY: 回调期间 window 有效，仅读取尺寸。
+        let (width, height) = unsafe {
+            (
+                ANativeWindow_getWidth(window),
+                ANativeWindow_getHeight(window),
+            )
+        };
+        log::info!("onNativeWindowResized: window={window:p} {width}x{height}");
+        if engine
+            .tx
+            .send(EngineMsg::WindowResized { width, height })
+            .is_ok()
+        {
+            wake_engine(engine);
         }
     });
 }

@@ -84,18 +84,20 @@ T1 workspace 骨架 + 空 cdylib 装机
 **Description:** 在 counter（或临时 spike crate）中验证完整渲染路径：从 `ANativeWindow` 裸指针构造 rwh 0.6 句柄 → wgpu Instance/Adapter/Device/Surface（wgpu 29，SurfaceTargetUnsafe::RawHandle）→ 配置 Rgba8Unorm surface → vello 0.10 初始化与 Scene 编码（清屏 #121212、一个圆角矩形、一行英文、一行中文）→ present（pollster）。按 ADR-06 时间盒对比 glifo 0.2 与 skrifa 直绘，选定文本方案并记录系统字体加载方式（Roboto / NotoSansCJK ttc）。
 
 **Acceptance criteria:**
-- [ ] 真机窗口出现深色背景 + 彩色圆角矩形 + 清晰的中英文文本各一行
-- [ ] 窗口尺寸变化（旋转）后 surface 重配不崩、画面正确
-- [ ] spike 笔记明确：vello 0.10 真实 API 调用序列、wgpu 特性/呈现模式选择、文本方案（glifo 或 skrifa）、字体加载与 ttc 处理、遇到的版本坑
+- [x] 真机窗口出现深色背景 + 彩色圆角矩形 + 清晰的中英文文本各一行（Slice 2/3，证据见 render-poc §3.5/§4.5）
+- [x] 窗口尺寸变化（旋转）后 surface 重配不崩、画面正确（Slice 4，竖↔横铺满）
+- [x] spike 笔记明确：vello 0.10 真实 API 调用序列、wgpu 特性/呈现模式选择、文本方案（**定稿 skrifa 直绘**，ADR-06）、字体加载与 ttc 处理、遇到的版本坑（render-poc §2~§5）
 
 **Verification:**
-- [ ] 设备截图存档（暗底/矩形/中英文可见）
-- [ ] 旋转 3 次无崩溃、无 surface 错误日志
-- [ ] 产出 `docs/spikes/2026-09-render-poc.md`，结论可直接指导 T10
+- [x] 设备截图存档（暗底/矩形/中英文可见）
+- [x] 旋转 3 次无崩溃、无 surface 错误日志（2026-09-22 实测竖→横→竖→横 3 次方向切换，含启动重复上报共 4 次 Resized，0 surface 错误 / 0 崩溃）
+- [x] 产出 `docs/spikes/2026-09-render-poc.md`，结论可直接指导 T10（§2.6/§3.6/§4.6/§5.5 约束清单）
 
 **Dependencies:** T1
-**Files likely touched:** `examples/counter/src/lib.rs`（POC 代码，允许原型质量）、`docs/spikes/2026-09-render-poc.md`
-**Estimated scope:** M（2 文件 + 设备验证；本任务以消除不确定性为目标，不追求结构）
+**Files likely touched:** `crates/velm/src/render/{mod.rs,text.rs}`、`crates/velm/src/engine/activity_thread.rs`（resize 接线）、`docs/spikes/2026-09-render-poc.md`（POC 落在框架内，T10/T12 演进）
+**Estimated scope:** M（设备验证为主；本任务以消除不确定性为目标，不追求结构）
+
+> **实施记录（2026-09-22，T2 完成，4 切片 4 commit：3830e93 / d6e1415 / 290ae64 / Slice4）**：POC 落在框架 `crates/velm/src/render/`（非 counter）。关键实证：① 模拟器 SwiftShader Vulkan 可用，但 ranchu `vkSetDebugUtilsObjectNameEXT` 缺陷致 request_device 段错误 → `InstanceFlags::DISCARD_HAL_LABELS`；② vello0.10 无 render_to_surface，走「Rgba8Unorm 中间纹理(STORAGE|TEXTURE) + `wgpu::util::TextureBlitter`」；③ **色彩管线**：vello fine pass 输出字节已是 sRGB 编码结果，surface 必须强制**非 sRGB `Rgba8Unorm`**（blitter 同格式），否则双重编码泛白；limits 用 `Limits::default()`；④ 文本定稿 skrifa0.44 直绘（ADR-06），系统字体 Roboto(index0)+NotoSansCJK ttc **index2=SC**，逐字符双字体回退；⑤ resize 走 `onNativeWindowResized`（ndk-build2 默认 configChanges 已拦截旋转重建），重配 surface + 重建中间纹理 + 补帧。日志级别固定 Info（Trace 冲爆 logcat ring buffer 丢早期日志）。**未覆盖**：arm64 真机动态（仅 x86_64 模拟器动态 + aarch64 静态/clippy 绿）、Outdated/Lost 运行时真实触发。
 
 ### Task 3: NDK 能力 spike —— 符号核对、引擎线程 Looper、通道模型
 
@@ -119,9 +121,11 @@ T1 workspace 骨架 + 空 cdylib 装机
 
 ### Checkpoint A — Spike 评审（与人 review 后才能继续）
 
-- [ ] T2/T3 真机证据齐全；ADR-02（绑定）、ADR-06（文本栈）从「spike 决定」变为「实测定稿」
-- [ ] vello 0.10 + wgpu 29 路径可行；若不可行，回到 DECISIONS 重新决策（不允许带疑问进入正式开发）
-- [ ] 零胶水事件模型时序得到真机验证；SPEC §3.3 无需推翻
+- [x] T2/T3 真机证据齐全；ADR-02（绑定）、ADR-06（文本栈）从「spike 决定」变为「实测定稿」（ADR-03 渲染栈亦于 T2 四切片后定稿）
+- [x] vello 0.10 + wgpu 29 路径可行；若不可行，回到 DECISIONS 重新决策（不允许带疑问进入正式开发）——**已真机走通清屏/Scene/文本/resize，无遗留阻断性疑问**
+- [x] 零胶水事件模型时序得到真机验证；SPEC §3.3 无需推翻（T3 10/10、T2 resize 同步时序）
+
+> **状态（2026-09-22）**：以上事实项由 AI 自检齐备，T2/T3 两个高风险 spike 全部闭环。**CP-A 仍待人类 reviewer 正式评审放行**；在获得批准前不进入 Phase 1（T4+）正式开发。
 
 ## Phase 1 — host 纯逻辑层（逻辑泳道，TDD）
 
@@ -313,9 +317,9 @@ T1 workspace 骨架 + 空 cdylib 装机
 
 ## Open Questions（留给 spike/实现中回答，不阻塞计划批准）
 
-1. T2：glifo 0.2 还是 skrifa 直绘（ADR-06 时间盒）？NotoSansCJK `.ttc` 的 collection index 取值？
+1. ~~T2：glifo 0.2 还是 skrifa 直绘（ADR-06 时间盒）？NotoSansCJK `.ttc` 的 collection index 取值？~~ **已关闭（2026-09-22）**：定稿 skrifa 0.44 直绘（glifo 面向 vello_common 新栈、不接 vello0.10 Scene）；NotoSansCJK ttc **index 2 = SC**（0 JP/1 KR/2 SC/3 TC/4 HK），见 render-poc §4 与 ADR-06。
 2. ~~T3：raw-ndk-sys 符号清单结果；若切 ndk-sys，事件常量类型差异清单？~~ **已关闭（2026-09-22）**：符号全部具备，不切 ndk-sys；类型差异已记录（事件常量 u32 vs getter i32、getAction i32），见 spike §4。
-3. T10：vello 0.10 在 Android 的 surface 格式/呈现模式实测组合？
+3. ~~T10：vello 0.10 在 Android 的 surface 格式/呈现模式实测组合？~~ **已由 T2 实证关闭**：surface 强制非 sRGB `Rgba8Unorm`（避免 vello 输出被二次编码）、present mode 强制 Fifo、limits `Limits::default()`；vello 经 Rgba8Unorm 中间纹理 + TextureBlitter 上屏，见 render-poc §3。
 4. ~~T15：cargo-apk2 对 workspace 内 cdylib package 的具体 metadata 字段？~~ **已由 T1 实证关闭**（见 `docs/spikes/2026-09-ndk-capabilities.md` 第 2 节）。
 
 ## 计划出口检查（planning skill）

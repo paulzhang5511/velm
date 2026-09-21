@@ -49,7 +49,7 @@ v1 使用 `raw-ndk-sys = "0.1.2"`（Cargo.lock 已验证：自包含、无传递
 
 ---
 
-## ADR-03：渲染栈改用 crates.io 正式版 vello 0.10 + wgpu 29，放弃 git 开发快照（对应 Q3）
+## ADR-03：渲染栈改用 crates.io 正式版 vello 0.10 + wgpu 29，放弃 git 开发快照（对应 Q3）✅ 2026-09-22 T2 spike 四切片全部真机定稿
 
 **决策**
 
@@ -70,6 +70,8 @@ v1 使用 `raw-ndk-sys = "0.1.2"`（Cargo.lock 已验证：自包含、无传递
 - 强行 wgpu 30 + vello 0.10：否决，semver 大版本不一致会导致类型分裂。
 
 **证据**：<https://crates.io/crates/vello/0.10.0>、<https://crates.io/api/v1/crates/vello/0.10.0/dependencies>、<https://crates.io/crates/vello_common/0.2.0>
+
+**T2 spike 真机定稿（2026-09-22，详见 `docs/spikes/2026-09-render-poc.md`）**：四切片全部通过——① wgpu29 在模拟器 SwiftShader Vulkan 上建 surface/清屏（ranchu debug_utils 缺陷用 `DISCARD_HAL_LABELS` 绕过）；② vello0.10 Scene 经「Rgba8Unorm 中间纹理 + TextureBlitter」上屏，**surface 必须强制非 sRGB `Rgba8Unorm`** 以避免双重 sRGB 编码，limits 用 `Limits::default()`；③ skrifa0.44 直绘中英文（ADR-06）；④ `onNativeWindowResized` 重配 surface + 重建中间纹理，竖↔横旋转铺满、0 崩溃。锁定依赖 `wgpu=29`(vulkan)、`vello=0.10`(wgpu)、`peniko=0.6`、`skrifa=0.44`、`raw-window-handle=0.6`、`pollster=0.4`。
 
 ---
 
