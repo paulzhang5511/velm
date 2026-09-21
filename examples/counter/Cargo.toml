@@ -14,3 +14,24 @@ velm = { path = "../../crates/velm" }
 [target.'cfg(target_os = "android")'.dependencies]
 raw-ndk-sys = "0.1.2"
 android_logger = "0.15"
+
+# cargo-apk2 打包配置（ADR-04，无 Gradle）。
+# NativeActivity 由 cargo-apk2 按 cdylib 目标自动生成。
+[package.metadata.android]
+min_sdk_version = 24
+target_sdk_version = 35
+
+[package.metadata.android.application]
+label = "Velm Counter"
+
+# NativeActivity 加载 libcounter.so（cargo-apk2 据此生成 AndroidManifest）
+[[package.metadata.android.application.activity]]
+name = "android.app.NativeActivity"
+
+[[package.metadata.android.application.activity.meta_data]]
+name = "android.app.lib_name"
+value = "counter"
+
+[[package.metadata.android.application.activity.intent_filter]]
+actions = ["android.intent.action.MAIN"]
+categories = ["android.intent.category.LAUNCHER"]

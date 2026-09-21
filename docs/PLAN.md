@@ -64,14 +64,16 @@ T1 workspace 骨架 + 空 cdylib 装机
 **Description:** 按 ADR-07 把根 `Cargo.toml` 转为 workspace；新建 `crates/velm`（rlib）与 `examples/counter`（cdylib）；安装 cargo-apk2（ADR-04），配置 NDK r27（ADR-08）与 minSdk 24；demo 导出 `ANativeActivity_onCreate`，初始化 android_logger 并打印生命周期日志、绑定 5 个回调（回调体仅日志），打 APK 装到 arm64 真机/模拟器启动。删除 `src/main.rs`。
 
 **Acceptance criteria:**
-- [ ] `cargo build -p counter --target aarch64-linux-android` 产出的 `libcounter.so` 中 `nm -D` 可见 `ANativeActivity_onCreate`
-- [ ] cargo-apk2 打包安装后启动，logcat 可见 onCreate 与回调绑定日志（tag `VelmEngine`）
-- [ ] workspace 两 crate 均 `cargo build` 通过；`src/main.rs` 已删除；`Cargo.toml` 不含 ADR-01 移除项
+- [x] `cargo build -p counter --target aarch64-linux-android` 产出的 `libcounter.so` 中 `nm -D` 可见 `ANativeActivity_onCreate`（arm64 静态验证；DT_NEEDED 仅 liblog/libdl/libc）
+- [x] cargo-apk2 打包安装后启动，logcat 可见 onCreate 与回调绑定日志（tag `VelmEngine`）——**x86_64 / API 36 模拟器动态验证通过**（2026-09-21）；arm64 真机待连机复验
+- [x] workspace 两 crate 均 `cargo build` 通过；`src/main.rs` 已删除；`Cargo.toml` 不含 ADR-01 移除项
 
 **Verification:**
-- [ ] `cargo metadata --format-version 1` 无错误
-- [ ] `adb logcat -s VelmEngine` 抓到启动日志；App 不闪退
-- [ ] `cargo clippy --workspace --target aarch64-linux-android -- -D warnings`
+- [x] `cargo metadata --format-version 1` 无错误（`cargo apk2 check` 通过）
+- [x] `adb logcat -s VelmEngine` 抓到启动日志；App 不闪退（另实测 Home/回前台 surface 销毁重建日志正常）
+- [x] `cargo clippy --workspace --target aarch64-linux-android -- -D warnings`（host + arm64 + x86_64 三目标 clippy/fmt 全绿）
+
+> **实施记录（2026-09-21，T1 完成）**：cargo-apk2 1.4.1 子命令为 `cargo apk2 check/build/run`，需 `ANDROID_NDK_ROOT`；metadata 格式、默认 `configChanges=0x4a0`（旋转不重建 Activity）、raw-ndk-sys 高版本 stub 链接坑（由 `examples/counter/build.rs` 补 API29 `-L` 解决）详见 `docs/spikes/2026-09-ndk-capabilities.md`。计划外新增文件：`.cargo/config.toml`、`examples/counter/build.rs`。关键实证：未 `attachLooper` 时按键 5s ANR（预期，T3/T12 闭环）。
 
 **Dependencies:** None
 **Files likely touched:** `Cargo.toml`（根 workspace）、`crates/velm/Cargo.toml`、`crates/velm/src/lib.rs`、`examples/counter/Cargo.toml`、`examples/counter/src/lib.rs`（cargo-apk2 manifest 元数据置于 Cargo.toml，不额外建文件）
@@ -310,9 +312,9 @@ T1 workspace 骨架 + 空 cdylib 装机
 ## Open Questions（留给 spike/实现中回答，不阻塞计划批准）
 
 1. T2：glifo 0.2 还是 skrifa 直绘（ADR-06 时间盒）？NotoSansCJK `.ttc` 的 collection index 取值？
-2. T3：raw-ndk-sys 符号清单结果；若切 ndk-sys，事件常量类型差异清单？
+2. T3：raw-ndk-sys 符号清单结果；若切 ndk-sys，事件常量类型差异清单？（T1 已实证回调结构体与链接方案，剩 Looper/输入/窗口/density 符号，见 spike 文档第 4 节）
 3. T10：vello 0.10 在 Android 的 surface 格式/呈现模式实测组合？
-4. T15：cargo-apk2 对 workspace 内 cdylib package 的具体 metadata 字段？
+4. ~~T15：cargo-apk2 对 workspace 内 cdylib package 的具体 metadata 字段？~~ **已由 T1 实证关闭**（见 `docs/spikes/2026-09-ndk-capabilities.md` 第 2 节）。
 
 ## 计划出口检查（planning skill）
 
