@@ -26,10 +26,8 @@ use raw_ndk_sys::{
     AInputQueue_getEvent, AInputQueue_preDispatchEvent, AKeyEvent_getKeyCode, ALOOPER_POLL_ERROR,
     ALOOPER_PREPARE_ALLOW_NON_CALLBACKS, ALooper, ALooper_pollOnce, ALooper_prepare, ALooper_wake,
     AMotionEvent_getAction, AMotionEvent_getX, AMotionEvent_getY, ANativeActivity,
-    ANativeActivityCallbacks, ANativeWindow, ANativeWindow_Buffer,
-    ANativeWindow_LegacyFormat_WINDOW_FORMAT_RGBA_8888, ANativeWindow_acquire,
-    ANativeWindow_getHeight, ANativeWindow_getWidth, ANativeWindow_lock, ANativeWindow_release,
-    ANativeWindow_setBuffersGeometry, ANativeWindow_unlockAndPost,
+    ANativeActivityCallbacks, ANativeWindow, ANativeWindow_acquire, ANativeWindow_getHeight,
+    ANativeWindow_getWidth, ANativeWindow_release,
 };
 
 /// 日志 tag（logcat `-s VelmEngine`）。
@@ -156,6 +154,7 @@ fn engine_main(rx: Receiver<EngineMsg>, looper_slot: Arc<AtomicPtr<ALooper>>) {
 
         let mut queue: *mut AInputQueue = ptr::null_mut();
         let mut window: *mut ANativeWindow = ptr::null_mut();
+        let mut renderer: Option<crate::render::WgpuClear> = None;
 
         'outer: loop {
             // 先排空控制通道，保证销毁/退出消息优先于输入处理。
@@ -180,16 +179,28 @@ fn engine_main(rx: Receiver<EngineMsg>, looper_slot: Arc<AtomicPtr<ALooper>>) {
                         density,
                     } => {
                         if !window.is_null() && window != w {
-                            log::warn!("新窗口创建时旧窗口仍持有，先 release");
+                            log::warn!("新窗口创建时旧窗口仍持有，先释放渲染器与引用");
+                            renderer.take();
                             release_window(&mut window);
                         }
                         window = w;
                         log::info!("引擎获得窗口 {w:p}：{width}x{height} density={density:.2}");
-                        post_probe_frame(w);
+                        match crate::render::WgpuClear::new(
+                            w,
+                            width.max(0) as u32,
+                            height.max(0) as u32,
+                        ) {
+                            Some(gpu) => {
+                                gpu.render_clear();
+                                renderer = Some(gpu);
+                            }
+                            None => log::error!("wgpu 渲染器初始化失败（T2 spike）"),
+                        }
                     }
                     EngineMsg::WindowDestroyed(NdkPtr(w), ack) => {
                         if window == w {
-                            // T10 在此 drop renderer；POC 仅释放引用。
+                            // 先 drop 渲染器（停止 present、释放 surface），再 release 窗口。
+                            renderer.take();
                             release_window(&mut window);
                         } else {
                             log::warn!("WindowDestroyed 与当前持有窗口不一致");
@@ -197,6 +208,7 @@ fn engine_main(rx: Receiver<EngineMsg>, looper_slot: Arc<AtomicPtr<ALooper>>) {
                         let _ = ack.send(());
                     }
                     EngineMsg::Quit => {
+                        renderer.take();
                         if !queue.is_null() {
                             detach_queue(&mut queue);
                         }
@@ -270,52 +282,6 @@ fn release_window(slot: &mut *mut ANativeWindow) {
     unsafe { ANativeWindow_release(window) };
     *slot = ptr::null_mut();
     log::info!("引擎已 release 窗口: {window:p}");
-}
-
-/// T3 spike 临时代码：引擎线程软件 lock 一帧纯色并 post，触发 surface 首帧
-/// （未提交任何 buffer 时 InputWindowHandle 的 frame 为 0×0，触摸不投递；
-/// 见 spike 文档 §5.1）。T10 vello 渲染器接入后删除。
-fn post_probe_frame(window: *mut ANativeWindow) {
-    if window.is_null() {
-        return;
-    }
-    // SAFETY: 调用方（引擎线程）持有窗口所有权，调用期间无其他使用者。
-    unsafe {
-        let geo = ANativeWindow_setBuffersGeometry(
-            window,
-            0,
-            0,
-            ANativeWindow_LegacyFormat_WINDOW_FORMAT_RGBA_8888 as i32,
-        );
-        if geo != 0 {
-            log::warn!("setBuffersGeometry 失败: {geo}，按默认格式继续");
-        }
-
-        let mut buffer = ANativeWindow_Buffer::default();
-        let rc = ANativeWindow_lock(window, &mut buffer, ptr::null_mut());
-        if rc != 0 {
-            log::warn!("ANativeWindow_lock 失败: {rc}");
-            return;
-        }
-
-        let (w, h, stride) = (
-            buffer.width as usize,
-            buffer.height as usize,
-            buffer.stride as usize,
-        );
-        if !buffer.bits.is_null() && w > 0 && h > 0 && stride >= w {
-            // RGBA_8888 内存序 R,G,B,A；小端 u32 = 0xAABBGGRR，#121212。
-            let pixels = std::slice::from_raw_parts_mut(buffer.bits as *mut u32, stride * h);
-            pixels.fill(0xFF121212);
-        }
-
-        let posted = ANativeWindow_unlockAndPost(window);
-        if posted == 0 {
-            log::info!("POC 首帧已提交: {w}x{h} stride={stride}");
-        } else {
-            log::warn!("ANativeWindow_unlockAndPost 失败: {posted}");
-        }
-    }
 }
 
 /// 取出并处理队列中当前所有待处理输入事件（spike：日志 + finish）。

@@ -15,3 +15,6 @@
 
 #[cfg(target_os = "android")]
 pub mod engine;
+
+#[cfg(target_os = "android")]
+pub mod render;
