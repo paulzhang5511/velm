@@ -102,18 +102,20 @@ T1 workspace 骨架 + 空 cdylib 装机
 **Description:** 按 ADR-02 核对 raw-ndk-sys 0.1.2 是否提供：`ALooper_prepare/wake/pollOnce`、`AInputQueue_attachLooper/detachLooper/getEvent/preDispatch/finish`、`ANativeWindow_acquire/release/getWidth/getHeight/setBuffersGeometry`、`AConfiguration_fromAssetManager/getDensity`、`AMotionEvent_*`；缺失项记录并评估 ndk-sys 0.6 兜底。POC 验证：主线程回调只通过 crossbeam-channel 发布事件，spawn 的引擎线程 `ALooper_prepare(ALLOW_NON_CALLBACKS)` 后把输入队列 attach 到自己的 Looper 并能被唤醒收到事件；验证窗口/队列销毁的同步 ack 时序。
 
 **Acceptance criteria:**
-- [ ] 输出符号核对清单（每个需要的符号：存在/缺失/签名差异），给出最终绑定选择（raw-ndk-sys 或 ndk-sys）
-- [ ] POC 真机证明：回调线程不阻塞；引擎线程收到 WindowCreated/QueueCreated/触摸事件；销毁事件能被同步送达并干净退出
-- [ ] 确认 density 获取路径与返回值（真机 dpi）
+- [x] 输出符号核对清单（每个需要的符号：存在/缺失/签名差异），给出最终绑定选择（raw-ndk-sys 或 ndk-sys）——**全部存在，raw-ndk-sys 定稿，见 spike §4**
+- [x] POC 真机证明：回调线程不阻塞；引擎线程收到 WindowCreated/QueueCreated/触摸事件；销毁事件能被同步送达并干净退出
+- [x] 确认 density 获取路径与返回值（真机 dpi）——x86_64/API36 dpi=160 → density=1.00
 
 **Verification:**
-- [ ] logcat 时序日志显示「回调立即返回、引擎线程消费」
-- [ ] 反复启停 10 次无卡死/崩溃
-- [ ] 产出 `docs/spikes/2026-09-ndk-capabilities.md`
+- [x] logcat 时序日志显示「回调立即返回、引擎线程消费」（主线程 pid 与引擎线程 `velm-engine` 两个线程号分明）
+- [x] 反复启停 10 次无卡死/崩溃（2026-09-22 实测 10/10 干净 join、0 ANR、0 FATAL；另验 Home/回前台 surface 重建 + 输入恢复）
+- [x] 产出 `docs/spikes/2026-09-ndk-capabilities.md`
 
 **Dependencies:** T1
-**Files likely touched:** `examples/counter/src/lib.rs`（POC）、`docs/spikes/2026-09-ndk-capabilities.md`
+**Files likely touched:** `crates/velm/src/engine/activity_thread.rs`（POC 落在框架内，T12 演进）、`docs/spikes/2026-09-ndk-capabilities.md`
 **Estimated scope:** M
+
+> **实施记录（2026-09-22，T3 完成）**：POC 直接落在框架 `activity_thread.rs`（而非 counter），引擎线程模型即 T12 骨架。提交：f52902c（符号）、0d5f8e0（Looper/输入闭环）、本次（窗口所有权/density/压测）。计划外实证：① **不提交首帧则 InputWindowHandle frame=0×0、触摸不投递**（T10 硬约束，spike §5.1）；② bindgen 事件类型常量为 u32、getType 为 i32；③ Home 只销毁 window 不销毁 input queue（回前台仅重建 surface，queue 一直 attached）；④ `post_probe_frame` 为临时软件帧，T10 删除。
 
 ### Checkpoint A — Spike 评审（与人 review 后才能继续）
 
@@ -312,7 +314,7 @@ T1 workspace 骨架 + 空 cdylib 装机
 ## Open Questions（留给 spike/实现中回答，不阻塞计划批准）
 
 1. T2：glifo 0.2 还是 skrifa 直绘（ADR-06 时间盒）？NotoSansCJK `.ttc` 的 collection index 取值？
-2. T3：raw-ndk-sys 符号清单结果；若切 ndk-sys，事件常量类型差异清单？（T1 已实证回调结构体与链接方案，剩 Looper/输入/窗口/density 符号，见 spike 文档第 4 节）
+2. ~~T3：raw-ndk-sys 符号清单结果；若切 ndk-sys，事件常量类型差异清单？~~ **已关闭（2026-09-22）**：符号全部具备，不切 ndk-sys；类型差异已记录（事件常量 u32 vs getter i32、getAction i32），见 spike §4。
 3. T10：vello 0.10 在 Android 的 surface 格式/呈现模式实测组合？
 4. ~~T15：cargo-apk2 对 workspace 内 cdylib package 的具体 metadata 字段？~~ **已由 T1 实证关闭**（见 `docs/spikes/2026-09-ndk-capabilities.md` 第 2 节）。
 

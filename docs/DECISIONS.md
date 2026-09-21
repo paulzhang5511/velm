@@ -31,11 +31,11 @@
 
 ---
 
-## ADR-02：NDK 绑定保留 raw-ndk-sys 0.1.2，符号缺口在 spike 中验证（对应 Q2）
+## ADR-02：NDK 绑定保留 raw-ndk-sys 0.1.2（✅ 2026-09-22 T3 实测定稿，对应 Q2）
 
 **决策**
 
-v1 使用 `raw-ndk-sys = "0.1.2"`（Cargo.lock 已验证：自包含、无传递依赖）。在 PLAN Phase 0 的 spike 中核对以下符号是否齐备：`AInputQueue_attachLooper/detachLooper`、`ALooper_prepare/wake/pollOnce`、`ANativeWindow_acquire/release`、`AConfiguration_fromAssetManager/getDensity`、`AMotionEvent_*`、（P1 预留）`AChoreographer_*`。若有关键缺口，切换到已在 lock 中作为传递依赖存在的 `ndk-sys 0.6`。
+v1 使用 `raw-ndk-sys = "0.1.2"`（Cargo.lock 已验证：自包含、无传递依赖）。**T3 spike 已核对全部所需符号齐备**（Looper/输入队列/窗口/density/触摸，含完整签名与 bindgen 类型差异，见 `docs/spikes/2026-09-ndk-capabilities.md` §4），并经 x86_64/API36 真机闭环验证（引擎线程 Looper、同步销毁 ack、acquire/release、density=1.00、10 次启停 0 ANR）。**不切换 ndk-sys**；`ndk-sys 0.6` 仅作为未来 raw-ndk-sys 停更时的备选，不再作为本项目兜底前置。
 
 **理由**
 

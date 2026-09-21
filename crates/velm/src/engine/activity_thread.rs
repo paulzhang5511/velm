@@ -19,13 +19,16 @@ use std::thread::{self, JoinHandle};
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use raw_ndk_sys::{
+    ACONFIGURATION_DENSITY_ANY, ACONFIGURATION_DENSITY_NONE, AConfiguration_delete,
+    AConfiguration_fromAssetManager, AConfiguration_getDensity, AConfiguration_new,
     AINPUT_EVENT_TYPE_KEY, AINPUT_EVENT_TYPE_MOTION, AInputEvent_getType, AInputQueue,
     AInputQueue_attachLooper, AInputQueue_detachLooper, AInputQueue_finishEvent,
     AInputQueue_getEvent, AInputQueue_preDispatchEvent, AKeyEvent_getKeyCode, ALOOPER_POLL_ERROR,
     ALOOPER_PREPARE_ALLOW_NON_CALLBACKS, ALooper, ALooper_pollOnce, ALooper_prepare, ALooper_wake,
     AMotionEvent_getAction, AMotionEvent_getX, AMotionEvent_getY, ANativeActivity,
     ANativeActivityCallbacks, ANativeWindow, ANativeWindow_Buffer,
-    ANativeWindow_LegacyFormat_WINDOW_FORMAT_RGBA_8888, ANativeWindow_lock,
+    ANativeWindow_LegacyFormat_WINDOW_FORMAT_RGBA_8888, ANativeWindow_acquire,
+    ANativeWindow_getHeight, ANativeWindow_getWidth, ANativeWindow_lock, ANativeWindow_release,
     ANativeWindow_setBuffersGeometry, ANativeWindow_unlockAndPost,
 };
 
@@ -48,6 +51,15 @@ enum EngineMsg {
     InputQueueCreated(NdkPtr<AInputQueue>),
     /// 第二参数为一次性 ack 通道：引擎完成 detach 后回执，主线程才放行。
     InputQueueDestroyed(NdkPtr<AInputQueue>, Sender<()>),
+    /// 窗口所有权随消息移交：主线程已 acquire，引擎线程负责 release。
+    WindowCreated {
+        window: NdkPtr<ANativeWindow>,
+        width: i32,
+        height: i32,
+        density: f32,
+    },
+    /// 引擎停止使用窗口并 release 后回执，主线程才从销毁回调返回。
+    WindowDestroyed(NdkPtr<ANativeWindow>, Sender<()>),
     Quit,
 }
 
@@ -143,6 +155,7 @@ fn engine_main(rx: Receiver<EngineMsg>, looper_slot: Arc<AtomicPtr<ALooper>>) {
         log::info!("引擎线程 Looper 就绪");
 
         let mut queue: *mut AInputQueue = ptr::null_mut();
+        let mut window: *mut ANativeWindow = ptr::null_mut();
 
         'outer: loop {
             // 先排空控制通道，保证销毁/退出消息优先于输入处理。
@@ -160,9 +173,35 @@ fn engine_main(rx: Receiver<EngineMsg>, looper_slot: Arc<AtomicPtr<ALooper>>) {
                         // 无论是否匹配都回执：回调必须被放行。
                         let _ = ack.send(());
                     }
+                    EngineMsg::WindowCreated {
+                        window: NdkPtr(w),
+                        width,
+                        height,
+                        density,
+                    } => {
+                        if !window.is_null() && window != w {
+                            log::warn!("新窗口创建时旧窗口仍持有，先 release");
+                            release_window(&mut window);
+                        }
+                        window = w;
+                        log::info!("引擎获得窗口 {w:p}：{width}x{height} density={density:.2}");
+                        post_probe_frame(w);
+                    }
+                    EngineMsg::WindowDestroyed(NdkPtr(w), ack) => {
+                        if window == w {
+                            // T10 在此 drop renderer；POC 仅释放引用。
+                            release_window(&mut window);
+                        } else {
+                            log::warn!("WindowDestroyed 与当前持有窗口不一致");
+                        }
+                        let _ = ack.send(());
+                    }
                     EngineMsg::Quit => {
                         if !queue.is_null() {
                             detach_queue(&mut queue);
+                        }
+                        if !window.is_null() {
+                            release_window(&mut window);
                         }
                         break 'outer;
                     }
@@ -218,6 +257,65 @@ fn detach_queue(slot: &mut *mut AInputQueue) {
     unsafe { AInputQueue_detachLooper(queue) };
     *slot = ptr::null_mut();
     log::info!("InputQueue 已 detach: {queue:p}");
+}
+
+/// 释放引擎线程持有的窗口引用（与主线程 `ANativeWindow_acquire` 平衡）。
+fn release_window(slot: &mut *mut ANativeWindow) {
+    let window = *slot;
+    if window.is_null() {
+        return;
+    }
+    // SAFETY: 主线程在 created 回调中 acquire 一次并移交所有权；
+    // 销毁同步 ack 保证 release 前本线程是唯一使用者。
+    unsafe { ANativeWindow_release(window) };
+    *slot = ptr::null_mut();
+    log::info!("引擎已 release 窗口: {window:p}");
+}
+
+/// T3 spike 临时代码：引擎线程软件 lock 一帧纯色并 post，触发 surface 首帧
+/// （未提交任何 buffer 时 InputWindowHandle 的 frame 为 0×0，触摸不投递；
+/// 见 spike 文档 §5.1）。T10 vello 渲染器接入后删除。
+fn post_probe_frame(window: *mut ANativeWindow) {
+    if window.is_null() {
+        return;
+    }
+    // SAFETY: 调用方（引擎线程）持有窗口所有权，调用期间无其他使用者。
+    unsafe {
+        let geo = ANativeWindow_setBuffersGeometry(
+            window,
+            0,
+            0,
+            ANativeWindow_LegacyFormat_WINDOW_FORMAT_RGBA_8888 as i32,
+        );
+        if geo != 0 {
+            log::warn!("setBuffersGeometry 失败: {geo}，按默认格式继续");
+        }
+
+        let mut buffer = ANativeWindow_Buffer::default();
+        let rc = ANativeWindow_lock(window, &mut buffer, ptr::null_mut());
+        if rc != 0 {
+            log::warn!("ANativeWindow_lock 失败: {rc}");
+            return;
+        }
+
+        let (w, h, stride) = (
+            buffer.width as usize,
+            buffer.height as usize,
+            buffer.stride as usize,
+        );
+        if !buffer.bits.is_null() && w > 0 && h > 0 && stride >= w {
+            // RGBA_8888 内存序 R,G,B,A；小端 u32 = 0xAABBGGRR，#121212。
+            let pixels = std::slice::from_raw_parts_mut(buffer.bits as *mut u32, stride * h);
+            pixels.fill(0xFF121212);
+        }
+
+        let posted = ANativeWindow_unlockAndPost(window);
+        if posted == 0 {
+            log::info!("POC 首帧已提交: {w}x{h} stride={stride}");
+        } else {
+            log::warn!("ANativeWindow_unlockAndPost 失败: {posted}");
+        }
+    }
 }
 
 /// 取出并处理队列中当前所有待处理输入事件（spike：日志 + finish）。
@@ -299,56 +397,39 @@ unsafe extern "C" fn native_window_created(
 ) {
     guard(|| {
         log::info!("onNativeWindowCreated: window={window:p}");
-        // T3 POC：提交一帧纯色，验证"surface 首帧建立输入窗口几何"假设；
-        // T10 vello 渲染器接入后删除（Slice 3 再做 acquire/release 所有权）。
-        post_probe_frame(window);
-        let _ = activity;
-    });
-}
-
-/// T3 spike 临时代码：软件 lock 一帧纯色并 post，触发 surface 首帧
-/// （未提交任何 buffer 时 InputWindowHandle 的 frame 为 0×0，触摸不投递）。
-fn post_probe_frame(window: *mut ANativeWindow) {
-    if window.is_null() {
-        return;
-    }
-    // SAFETY: window 指针由本次 onNativeWindowCreated 回调提供，调用期间有效。
-    unsafe {
-        let geo = ANativeWindow_setBuffersGeometry(
-            window,
-            0,
-            0,
-            ANativeWindow_LegacyFormat_WINDOW_FORMAT_RGBA_8888 as i32,
-        );
-        if geo != 0 {
-            log::warn!("setBuffersGeometry 失败: {geo}，按默认格式继续");
-        }
-
-        let mut buffer = ANativeWindow_Buffer::default();
-        let rc = ANativeWindow_lock(window, &mut buffer, ptr::null_mut());
-        if rc != 0 {
-            log::warn!("ANativeWindow_lock 失败: {rc}");
+        // SAFETY: 回调在主线程、activity/window 有效。
+        let Some(engine) = (unsafe { engine_of(activity) }) else {
+            return;
+        };
+        if window.is_null() {
             return;
         }
-
-        let (w, h, stride) = (
-            buffer.width as usize,
-            buffer.height as usize,
-            buffer.stride as usize,
-        );
-        if !buffer.bits.is_null() && w > 0 && h > 0 && stride >= w {
-            // RGBA_8888 内存序 R,G,B,A；小端 u32 = 0xAABBGGRR，#121212。
-            let pixels = std::slice::from_raw_parts_mut(buffer.bits as *mut u32, stride * h);
-            pixels.fill(0xFF121212);
-        }
-
-        let posted = ANativeWindow_unlockAndPost(window);
-        if posted == 0 {
-            log::info!("POC 首帧已提交: {w}x{h} stride={stride}");
+        // acquire 与引擎线程 release 平衡：回调返回后框架可能回收其引用，
+        // 引擎线程需自持一份（SPEC §3.3 资源所有权）。
+        // SAFETY: window 在回调期间有效，acquire 仅增引用计数。
+        unsafe { ANativeWindow_acquire(window) };
+        // SAFETY: 同上，仅读取尺寸。
+        let (width, height) = unsafe {
+            (
+                ANativeWindow_getWidth(window),
+                ANativeWindow_getHeight(window),
+            )
+        };
+        let density = read_density(activity);
+        let msg = EngineMsg::WindowCreated {
+            window: NdkPtr(window),
+            width,
+            height,
+            density,
+        };
+        if engine.tx.send(msg).is_ok() {
+            wake_engine(engine);
         } else {
-            log::warn!("ANativeWindow_unlockAndPost 失败: {posted}");
+            // 引擎线程已退出：回滚本次 acquire，避免泄漏。
+            // SAFETY: 平衡上面的 acquire，window 回调期间仍有效。
+            unsafe { ANativeWindow_release(window) };
         }
-    }
+    });
 }
 
 unsafe extern "C" fn native_window_destroyed(
@@ -357,9 +438,53 @@ unsafe extern "C" fn native_window_destroyed(
 ) {
     guard(|| {
         log::info!("onNativeWindowDestroyed: window={window:p}");
-        // Slice 3：同步停绘 + release。
-        let _ = activity;
+        // SAFETY: 回调在主线程、activity 有效。
+        let Some(engine) = (unsafe { engine_of(activity) }) else {
+            return;
+        };
+        let (ack_tx, ack_rx) = unbounded();
+        if engine
+            .tx
+            .send(EngineMsg::WindowDestroyed(NdkPtr(window), ack_tx))
+            .is_ok()
+        {
+            wake_engine(engine);
+            // 阻塞到引擎线程 release 且不再使用该窗口（SPEC §3.3 同步销毁）。
+            let _ = ack_rx.recv();
+            log::info!("onNativeWindowDestroyed 同步 ack 已收到");
+        }
     });
+}
+
+/// 从 AssetManager 配置读取屏幕 density（ADR-12：dpi/160，异常值兜底 1.0）。
+fn read_density(activity: *mut ANativeActivity) -> f32 {
+    // SAFETY: 回调期间 activity 与其 assetManager 有效。
+    let asset_manager = unsafe { (*activity).assetManager };
+    if asset_manager.is_null() {
+        log::warn!("assetManager 为空，density 兜底 1.0");
+        return 1.0;
+    }
+    // SAFETY: AConfiguration_new/delete 配对；fromAssetManager 只读借用 am。
+    unsafe {
+        let config = AConfiguration_new();
+        if config.is_null() {
+            log::warn!("AConfiguration_new 返回空，density 兜底 1.0");
+            return 1.0;
+        }
+        AConfiguration_fromAssetManager(config, asset_manager);
+        let dpi = AConfiguration_getDensity(config);
+        AConfiguration_delete(config);
+
+        if dpi > 0
+            && dpi != ACONFIGURATION_DENSITY_ANY as i32
+            && dpi != ACONFIGURATION_DENSITY_NONE as i32
+        {
+            dpi as f32 / 160.0
+        } else {
+            log::warn!("density dpi={dpi} 为异常值，兜底 1.0");
+            1.0
+        }
+    }
 }
 
 unsafe extern "C" fn input_queue_created(activity: *mut ANativeActivity, queue: *mut AInputQueue) {

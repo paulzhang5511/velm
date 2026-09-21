@@ -111,8 +111,17 @@ POC 验证：在 `onNativeWindowCreated` 中 `setBuffersGeometry(RGBA_8888)` + `
 
 **结论（写入 T10 验收）**：渲染器必须在窗口创建后尽快提交首帧（哪怕清屏），否则任何触摸交互都不会被 InputDispatcher 投递；T11 静态画面里程碑天然满足该条件。该 probe 帧为临时代码（`post_probe_frame`），T10 vello 渲染器接入后删除。
 
-## 6. T3 POC 待验证（Slice 3）
+## 6. T3 POC 验证结果（Slice 3，2026-09-22）
 
-- [ ] `ANativeWindow_acquire/release` 平衡 + 真机宽高与 `AConfiguration_getDensity` 取值（ADR-12）。
-- [ ] 反复启停 10 次无卡死/崩溃（同步 ack + join 时序压力）。
-- [ ] `AChoreographer` 仅登记符号，P1 不接线。
+- [x] 窗口所有权：`onNativeWindowCreated` 中 `ANativeWindow_acquire` 后经 channel 移交引擎线程；真机宽高 **320×640**；density 路径 `AConfiguration_new → fromAssetManager(activity.assetManager) → getDensity → delete`，实测 dpi=160 → **density=1.00**（异常值 0/65534/65535 兜底 1.0 + warn）。
+- [x] `onNativeWindowDestroyed` 同步 ack：引擎线程 `ANativeWindow_release` 后回执，主线程才返回（实测 3–33ms）；acquire/release 一一配对（send 失败路径回滚 release；Quit 防御性 release）。
+- [x] 反复启停 **10 次（start→tap→BACK）10/10 干净 join，0 ANR、0 FATAL**。
+- [x] Home/回前台：Home 只触发 window destroyed（release+ack），**input queue 不销毁、保持 attached**；回前台新 window created 并重新提交首帧，触摸立即恢复；BACK 退出时双资源（window/queue）同步销毁 + join 干净。
+- [ ] `AChoreographer` 仅登记符号，P1 不接线（T3 不做）。
+
+## 7. 对后续任务的约束（T3 结论）
+
+1. **T10 渲染器**：窗口创建后必须尽快 queue 首帧（含清屏），否则 InputWindowHandle 几何为 0、触摸不投递（§5.1）；surface 使用全部在引擎线程，主线程仅 acquire/发布/同步 ack。
+2. **T5 事件**：常量比较注意 bindgen 类型（`AINPUT_EVENT_TYPE_*` 为 u32，getter 返回 i32）；`AMotionEvent_getAction` 为 i32，低 8 位 action。
+3. **T12 引擎线程**：现有 Looper/channel/ack/join 骨架直接演进为正式事件状态机；销毁同步协议（window、queue 各一次 ack）已定型。
+4. **T14 压测**：Home 路径不重建 queue，旋转因 configChanges 不重建 Activity（T1 实证），压测脚本以 BACK 启停 + Home/回前台为主。
