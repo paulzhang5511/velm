@@ -6,7 +6,9 @@
 //! 硬件做 sRGB 编码）→ present。
 //!
 //! Slice 2：清屏 #121212（vello `RenderParams::base_color`）+ 一个绿色
-//! 圆角矩形；文本在 Slice 3 接入。
+//! 圆角矩形；Slice 3：skrifa 直绘系统字体文本（英文/数字 + 中文回退）。
+
+mod text;
 
 use std::ffi::c_void;
 use std::num::NonZeroUsize;
@@ -16,6 +18,7 @@ use raw_ndk_sys::ANativeWindow;
 use raw_window_handle::{
     AndroidDisplayHandle, AndroidNdkWindowHandle, RawDisplayHandle, RawWindowHandle,
 };
+use text::{FontFace, shape_runs};
 use vello::kurbo::{Affine, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
 use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene};
@@ -25,6 +28,10 @@ use wgpu;
 const BACKGROUND: Color = Color::from_rgba8(0x12, 0x12, 0x12, 0xFF);
 /// ADR-10 「+1」绿。
 const ACCENT: Color = Color::from_rgba8(0x2E, 0x7D, 0x32, 0xFF);
+/// ADR-10 计数/标签文字白。
+const TEXT_WHITE: Color = Color::from_rgba8(0xFF, 0xFF, 0xFF, 0xFF);
+/// ADR-10 计数文字字号（sp；density=1.0 时 1sp=1px）。
+const COUNT_SIZE: f32 = 28.0;
 
 /// vello 渲染器 POC：持有 wgpu 表面、vello Renderer 与中间纹理。
 pub struct VelloRenderer {
@@ -37,6 +44,10 @@ pub struct VelloRenderer {
     /// vello compute 写入的中间纹理（Rgba8Unorm + STORAGE）。
     target: wgpu::Texture,
     target_view: wgpu::TextureView,
+    /// Roboto（拉丁/数字）；加载失败则不绘文字。
+    roboto: Option<FontFace>,
+    /// Noto Sans CJK SC（中文回退，ttc index 2）。
+    noto_sc: Option<FontFace>,
 }
 
 impl VelloRenderer {
@@ -126,9 +137,20 @@ impl VelloRenderer {
             },
         )
         .ok()?;
-        // blitter 目标格式 = surface 格式（sRGB），源（vello 中间纹理）格式不限。
+        // blitter 目标格式 = surface 格式（Rgba8Unorm，非 sRGB），源格式不限。
         let blitter = wgpu::util::TextureBlitter::new(&device, config.format);
         let (target, target_view) = create_vello_target(&device, width, height);
+
+        // Slice 3：加载系统字体（失败不阻断图形渲染，仅无对应文字）。
+        let roboto = FontFace::load(text::ROBOTO_REGULAR, 0);
+        if roboto.is_none() {
+            log::warn!("Roboto 加载失败，拉丁文本不可用");
+        }
+        let (noto_path, noto_index) = text::NOTO_SANS_CJK_SC;
+        let noto_sc = FontFace::load(noto_path, noto_index);
+        if noto_sc.is_none() {
+            log::warn!("NotoSansCJK 加载失败，中文文本不可用");
+        }
 
         Some(Self {
             surface,
@@ -139,6 +161,8 @@ impl VelloRenderer {
             blitter,
             target,
             target_view,
+            roboto,
+            noto_sc,
         })
     }
 
@@ -164,6 +188,29 @@ impl VelloRenderer {
         let rect = Rect::new(40.0, 250.0, 280.0, 390.0);
         let rounded = RoundedRect::from_rect(rect, 20.0);
         scene.fill(Fill::NonZero, Affine::IDENTITY, ACCENT, None, &rounded);
+
+        // Slice 3：Roboto 白色计数行 + 中英混排行（中文回退 Noto SC）。
+        if let Some(roboto) = &self.roboto {
+            let (en_glyphs, _) = roboto.shape("Count: 0", COUNT_SIZE);
+            scene
+                .draw_glyphs(&roboto.data)
+                .font_size(COUNT_SIZE)
+                .brush(TEXT_WHITE)
+                .transform(Affine::translate((24.0, 120.0)))
+                .draw(Fill::NonZero, en_glyphs.into_iter());
+
+            // “计数”走 Noto SC，空格/“+1”回 Roboto，验证逐字符字体回退分段。
+            if let Some(noto) = &self.noto_sc {
+                for run in shape_runs("计数 +1", COUNT_SIZE, roboto, Some(noto)) {
+                    scene
+                        .draw_glyphs(&run.face.data)
+                        .font_size(COUNT_SIZE)
+                        .brush(TEXT_WHITE)
+                        .transform(Affine::translate((24.0, 180.0)))
+                        .draw(Fill::NonZero, run.glyphs.into_iter());
+                }
+            }
+        }
 
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(texture)
@@ -194,7 +241,7 @@ impl VelloRenderer {
             return;
         }
 
-        // blit 中间纹理到 sRGB surface（硬件完成 sRGB 编码）。
+        // blit 中间纹理到非 sRGB surface（值直通，vello 已完成 sRGB 编码）。
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {

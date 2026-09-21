@@ -3,7 +3,7 @@
 **日期**：2026-09-22
 **对应任务**：PLAN Task 2（渲染 spike）、ADR-03（渲染栈版本）、ADR-06（文本栈，Slice 3 决策）
 **设备**：x86_64 / API 36 模拟器（AVD velm_test，swiftshader_indirect，320×640，density 160）
-**状态**：Slice 1 ✅ ｜ Slice 2 ✅ vello Scene ｜ Slice 3 ⬜ 文本 ｜ Slice 4 ⬜ resize
+**状态**：Slice 1 ✅ ｜ Slice 2 ✅ vello Scene ｜ Slice 3 ✅ 文本（skrifa 直绘）｜ Slice 4 ⬜ resize
 
 本 spike 以消除渲染路径不确定性为目标，代码直接落在框架 `crates/velm/src/render/`
 （T10 `VelloRenderer` 的前身），允许原型质量，但每个关键 API 与设备行为必须真机实证。
@@ -16,7 +16,7 @@
 |---|---|---|---|
 | 1 | `ANativeWindow` → rwh 0.6 → wgpu 29 surface（Vulkan）→ adapter/device → 清屏 present | 模拟器软件 Vulkan 是否可用、wgpu 29 API 变迁 | ✅ 2026-09-22 |
 | 2 | 引入 vello 0.10（`features=["wgpu"]`）+ peniko 0.6，Scene 清屏 + 圆角矩形 | vello 0.10 真实 API 序列、limits 要求 | ✅ 2026-09-22 |
-| 3 | glifo 0.2 vs skrifa 0.44 时间盒；Roboto + NotoSansCJK 中英文 | 文本栈选型、ttc index、AssetManager 读字体 | ⬜ |
+| 3 | glifo 0.2 vs skrifa 0.44 时间盒；Roboto + NotoSansCJK 中英文 | 文本栈选型、ttc index、AssetManager 读字体 | ✅ 2026-09-22（定稿 skrifa，ADR-06） |
 | 4 | `onNativeWindowResized` → surface 重配；旋转不崩；ADR-06 定稿 | resize 时序、旧帧失效处理 | ⬜ |
 
 ---
@@ -282,3 +282,102 @@ Mali/Adreno 的 default limits 支持情况留待 arm64 真机复核（当前仅
    已封装），再补一帧。
 6. 日志级别固定 Info，禁止在装机验证构建开 Trace（ring buffer 会丢早期关键日志）。
 7. 其余 Instance/surface unsafe/Fifo/取帧枚举/销毁顺序沿用 §2.6。
+
+---
+
+## 4. Slice 3：文本栈（skrifa 直绘）与中英文渲染（✅ 真机通过，ADR-06 定稿）
+
+### 4.1 选型结论：skrifa 0.44 直绘，不引入 glifo
+
+vello 0.10 只提供 glyph run 编码（`Scene::draw_glyphs`），**不含字体解析、cmap、排版**。
+时间盒对比两条路径（完整论证见 ADR-06）：
+
+| 维度 | skrifa 0.44 直绘（**选定**） | glifo 0.2 |
+|---|---|---|
+| 与 vello 0.10 关系 | vello 内部已依赖 skrifa 0.44，`draw_glyphs` 内部也用它解析 | 依赖 `vello_common 0.1`（下一代 vello_hybrid 栈），renderer 仅 `use vello_common::paint`，**不对接 vello 0.10 Scene** |
+| 新增依赖 | **无解析栈新增**（显式声明同版本 skrifa） | +hashbrown/foldhash/smallvec/bytemuck/vello_common（可选 png） |
+| 能力 | cmap + 水平 advance（够用） | glyph atlas 缓存、下划线/删除线、富文本（P0 用不到） |
+| 成熟度 | 随 vello 0.10 稳定 | self-described experimental，0.2→0.3 快速迭代 |
+
+P0 仅单行数字 + 中英文标签（无 emoji/复杂连字/BiDi/自动换行），skrifa 直绘最小且与
+ADR-03 同栈；glifo 留待升级 vello_common 架构或需要富文本时再评估。
+
+新增依赖（android target）：`skrifa = "0.44"`（解析为 0.44.0，与 vello 内部完全同版本）。
+
+### 4.2 系统字体与 ttc index（真机实测）
+
+字体**不打包进 APK**，直接 `std::fs::read` 系统路径（对所有进程可读；NotoSansCJK ttc
+约 32MB，打包会让 APK 严重膨胀）：
+
+```
+/system/fonts/Roboto-Regular.ttf        2,371,712 B   拉丁/数字（ttf，index 0）
+/system/fonts/NotoSansCJK-Regular.ttc  32,355,424 B   CJK（ttc，含 5 个子表）
+```
+
+host 端用 skrifa 枚举 ttc（临时探针，非交付物）实测子表：
+
+```
+index 0: Noto Sans CJK JP   （含 CJK 统一表意文字，但日式字形）
+index 1: Noto Sans CJK KR
+index 2: Noto Sans CJK SC   ← 简体中文，选这个
+index 3: Noto Sans CJK TC
+index 4: Noto Sans CJK HK
+```
+
+五个子表对同一 CJK 码位都有 glyph（Unicode 统一表意文字共享），差别是**地区字形**；
+简体必须用 **index 2 (SC)**。Roboto 实测 `'0'→gid21`、`'A'→gid38`、`'计'→无`（中文
+正确回退 Noto）。Noto SC 全角汉字 28px 下 advance≈28（1em）。
+
+### 4.3 已验证的 skrifa 0.44 / vello glyph API
+
+- 字体引用：`skrifa::FontRef::from_index(&bytes, ttc_index)?`（ttf 用 `FontRef::new`），
+  字节需在引用期间存活。
+- cmap：`use skrifa::MetadataProvider; let charmap = font.charmap(); charmap.map(char) -> Option<GlyphId>`；
+  `GlyphId::to_u32()`。
+- 水平度量：`font.glyph_metrics(Size::new(px), LocationRef::default()).advance_width(gid) -> Option<f32>`
+  （`Size`/`LocationRef` 在 `skrifa::instance`，prelude 亦导出）。
+- family name（诊断）：`font.localized_strings(StringId::FAMILY_NAME).english_or_first()`。
+- vello 字体数据：`vello::peniko::{Blob, FontData}`（peniko re-export 自
+  linebender_resource_handle）：`FontData::new(Blob::new(Arc<Vec<u8>>>), index)`；
+  `Blob::new(Arc<dyn AsRef<[u8]> + Send + Sync>)`，与自持有字节共享同一分配。
+- glyph run：`vello::Glyph { id: u32, x: f32, y: f32 }`（x/y 相对 run 原点，y=0 即基线）；
+  ```
+  scene.draw_glyphs(&font_data)
+       .font_size(px)
+       .brush(color)
+       .transform(Affine::translate((origin_x, baseline_y)))  // run 原点=基线左端
+       .draw(Fill::NonZero, glyphs.into_iter());               // DrawGlyphs builder
+  ```
+  `draw_glyphs` 是 `Scene` 固有方法（无需 trait import）；清屏仍走 `RenderParams::base_color`。
+
+### 4.4 实现结构（`crates/velm/src/render/text.rs`）
+
+- `FontFace { bytes: Arc<Vec<u8>>, index, data: FontData, family }`：`load(path,index)`
+  从系统路径加载；`shape(text,px) -> (Vec<Glyph>, 行宽)` 逐字符 cmap + advance；
+  `contains(char)` 判字体覆盖。
+- `shape_runs(text, px, primary: &FontFace, fallback: Option<&FontFace>) -> Vec<GlyphRun>`：
+  逐字符选字体（primary 含则用 primary，否则 fallback，都不含跳过），连续同字体的字符
+  聚成一段，段内 glyph x 累加为整行偏移；绘制时各 run 共用同一行原点 transform。
+- 渲染器持有 `roboto: Option<FontFace>`、`noto_sc: Option<FontFace>`，在 `init` 末尾
+  `std::fs::read` 加载（失败只 warn，不阻断图形）。
+
+### 4.5 真机结果与压测
+
+- 画面（`/tmp/velm_text_cjk.png`，临时非交付物）：白字 28px 两行——
+  行1 Roboto「Count: 0」；行2「计数 +1」中「计数」为 Noto Sans CJK **简体字形**、
+  空格与「+1」回退 Roboto，基线对齐、字号一致；绿色圆角矩形与 #121212 背景不变。
+- 加载日志：`已加载字体 Roboto（…#0，2371712 字节）`、
+  `已加载字体 Noto Sans CJK SC（…#2，32355424 字节）`。
+- **压测**：force-stop 后 3 次 start（同步等待 Noto 加载日志）→tap→BACK：
+  **3/3 两字体加载、3/3 干净 join、渲染/加载失败 0、原生崩溃 0**。32MB ttc 读取与
+  skrifa 解析在引擎线程完成，未阻塞主线程、未显著拖慢启动。
+
+### 4.6 对 T10/T6 的约束
+
+1. 文本统一走 skrifa：`FontFace::shape`/`shape_runs` 是排版层（T6）与渲染层（T10）的
+   边界；T10 只消费 `(FontData, Vec<Glyph>, 字号, 颜色, 原点)`。
+2. WrapContent 文本宽高用 skrifa 真实度量（advance + ascent/descent），废弃
+   SPEC §7.4 的 `chars*size*0.6` 近似；中文按全角（advance≈1em）。
+3. 字体路径/ttc index 作为常量；T15 评估在缺少某字体的设备上的 fallback 策略
+   （API24 AOSP/主流机型均含 Roboto + NotoSansCJK）。
+4. 不做 kerning/复杂 shaping/换行（P1）；若后续需要，重新评估 glifo/parley（ADR-06）。

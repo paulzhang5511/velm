@@ -101,23 +101,27 @@ v1 布局为手写 LinearLayout（纵向/横向），实现 SPEC §7.4 的修正
 
 ---
 
-## ADR-06：文本栈以 vello 0.10 官方用法为准，Phase 0 时间盒 spike 决定 glifo vs skrifa 直绘（对应 Q6）
+## ADR-06：文本栈定稿为 skrifa 0.44 直绘 + vello draw_glyphs（对应 Q6）✅ 2026-09-22 T2 Slice 3 定稿
 
 **决策**
 
 - v1 必须能渲染**英文与中文**文本（SC-13 中「真实文本度量/中文」提级为 P0 的显示部分；自动换行仍为 P1）。
-- Phase 0 渲染 spike 中用 ≤1 个时间盒对比两条路径，并默认采用 **vello 0.10 官方 examples 的文本做法**：
-  1. **glifo 0.2（crates.io 已独立发布，linebender 官方文本 API，MSRV 1.88，本机 1.95 满足）**——若确认它与 vello 0.10 配套顺畅，优先采用（排版/换行能力完整）；
-  2. 否则用 vello 0.10 自带的 **skrifa 0.44** 直接加载字形并填入 vello Scene（最小依赖路径，v1 文本场景简单：单行文本、显式字号/颜色）。
-- 字体来源：Android 系统字体 `/system/fonts/Roboto-Regular.ttf`（英文）与 `/system/fonts/NotoSansCJK-Regular.ttc`（中文 fallback）；spike 需验证 skrifa/glifo 读取 `.ttc` collection 的方式（必要时用 Roboto + Noto 双字体 fallback 链）。
-- WrapContent 文本宽度：spike 选定文本栈后，用其 advance 度量替换 SPEC §7.4 的 `chars*size*0.6` 近似（英文），中文按全角度量。
+- **定稿：采用 skrifa 0.44 直绘**（vello 0.10 已内部依赖同一 skrifa，零新增解析栈），自己做 cmap（字符→glyph id）+ 水平 advance 排版，把 `vello::Glyph{id,x,y}` 喂给 `Scene::draw_glyphs(&FontData)`；不引入 glifo/parley。
+- 字体来源：Android 系统字体 `/system/fonts/Roboto-Regular.ttf`（拉丁/数字，ttf index 0）与 `/system/fonts/NotoSansCJK-Regular.ttc`（中文 fallback，**ttc index 2 = Noto Sans CJK SC**，实测见 render-poc §4.2）；逐字符 cmap 覆盖做双字体回退分段（`shape_runs`）。系统字体对所有进程可读，且 NotoSansCJK ttc 约 32MB 不应打包进 APK。
+- WrapContent 文本宽度：用 skrifa `GlyphMetrics::advance_width` 真实度量替换 SPEC §7.4 的 `chars*size*0.6` 近似（英文按 advance、中文全角约 1em）；T6 布局接入。
+
+**glifo 0.2 时间盒对比结论（为何不选）**
+
+- glifo 0.2（linebender 官方、self-described experimental、0.2→0.3 快速迭代）是 glyph **atlas 光栅化缓存 + DrawSink/GlyphRenderer** 方案，依赖 `vello_common 0.1`、hashbrown、foldhash、smallvec、bytemuck（可选 png），面向 vello **下一代 vello_common/vello_hybrid 架构**；其 renderer 仅 `use vello_common::paint::...`，**不与 vello 0.10 的 `Scene`/`DrawGlyphs` 对接**。
+- 在 ADR-03 已锁定并实证 vello 0.10 的前提下，引入 glifo 0.2 需另起 vello_common 0.1 渲染栈、绕过 vello 0.10 Scene，等于推翻 ADR-03 并新增 6+ 依赖；换取的 glyph atlas 缓存、下划线/删除线、富文本能力在 P0 计数器（单行数字 + 中英文标签、无 emoji/复杂连字/BiDi）用不到。
+- 触发再评估的条件：未来升级到 vello 新版（vello_common 架构），或需要富文本/多行排版/emoji 时，重新评估 glifo/parley。
 
 **理由（证据）**
 
-- vello 0.10 直接依赖 `skrifa ^0.44`（字形解析，覆盖 CJK 字形取用）；现状 git 快照中的 glifo 0.3 是 in-tree 开发形态，而 crates.io 上 glifo 已独立到 0.2 track（2026-08 底仍在更新）——两者配套关系必须以实测为准，不能凭文档臆断。
-- 文本绘制是渲染器之外最大的不确定点，按 planning 高风险先行原则放进首个 spike，避免后期返工布局/渲染接口。
+- vello 0.10 直接依赖 `skrifa 0.44.0`，且其 `Scene::draw_glyphs` 内部就用 `skrifa::FontRef::from_index(data, index)` 处理 COLR/bitmap glyph——选 skrifa 与 vello 同栈、版本天然对齐。
+- T2 Slice 3 真机实证：skrifa cmap + advance + vello draw_glyphs 正确渲染 Roboto「Count: 0」与 Noto SC「计数 +1」（中文简体字形、拉丁回退、基线对齐、28px 白色），3/3 启停干净、0 崩溃；详见 `docs/spikes/2026-09-render-poc.md` §4。
 
-**证据**：<https://crates.io/crates/glifo/versions>、<https://crates.io/api/v1/crates/vello/0.10.0/dependencies>
+**证据**：T2 Slice 3 真机实证（render-poc §4）；glifo 0.2.0 源码依赖与 renderer 后端；<https://crates.io/crates/glifo/versions>、<https://crates.io/api/v1/crates/vello/0.10.0/dependencies>
 
 ---
 
@@ -208,7 +212,7 @@ v1 采用**按需渲染**：仅在状态变更（产生 Message 并 update）、
 | Q3 | vello 来源/版本 | crates.io vello 0.10 + wgpu 29，弃 git 快照 | ADR-03 |
 | Q4 | 打包链 | cargo-apk2（无 Gradle），cargo-ndk 备用 | ADR-04 |
 | Q5 | 布局引擎 | 手写 LinearLayout，不引 taffy | ADR-05 |
-| Q6 | 文本栈 | spike 定 glifo 0.2 / skrifa 直绘，系统字体，中英必达 | ADR-06 |
+| Q6 | 文本栈 | **定稿 skrifa 0.44 直绘 + vello draw_glyphs**（glifo 面向 vello_common 新栈，不适用），系统字体 Roboto+NotoSC(ttc#2)，中英必达 | ADR-06 |
 | Q7 | crate 划分 | workspace：crates/velm(rlib) + examples/counter(cdylib) | ADR-07 |
 | Q8 | minSdk/ABI/NDK | minSdk 24、NDK r27、arm64 P0 / x86_64 P1 | ADR-08 |
 | Q9 | 帧率模型 | 按需渲染 + Looper 唤醒；Choreographer P1 | ADR-09 |

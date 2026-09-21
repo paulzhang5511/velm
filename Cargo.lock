@@ -981,6 +981,7 @@ dependencies = [
  "pollster",
  "raw-ndk-sys",
  "raw-window-handle",
+ "skrifa",
  "vello",
  "wgpu",
 ]
