@@ -1,0 +1,8 @@
+# 本机 NDK r27 linker（ADR-08：minSdk 24）。
+# cargo-apk2 / cargo-ndk 会自行探测 NDK；此配置保证裸
+# `cargo build --target aarch64-linux-android` 也能直接链接。
+[target.aarch64-linux-android]
+linker = "/Users/paulzhang/Library/Android/sdk/ndk/27.3.13750724/toolchains/llvm/prebuilt/darwin-x86_64/bin/aarch64-linux-android24-clang"
+
+[target.x86_64-linux-android]
+linker = "/Users/paulzhang/Library/Android/sdk/ndk/27.3.13750724/toolchains/llvm/prebuilt/darwin-x86_64/bin/x86_64-linux-android24-clang"

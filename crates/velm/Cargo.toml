@@ -1,0 +1,18 @@
+[package]
+name = "velm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Velm：基于 vello GPU 渲染与 Elm(TEA) 架构的 Android 零胶水 NativeActivity 2D GUI 框架"
+
+[lib]
+name = "velm"
+crate-type = ["rlib"]
+
+[dependencies]
+log = "0.4"
+
+[target.'cfg(target_os = "android")'.dependencies]
+raw-ndk-sys = "0.1.2"
+android_logger = "0.15"

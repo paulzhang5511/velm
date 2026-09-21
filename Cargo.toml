@@ -1,31 +1,12 @@
-[package]
-name = "velm"
+[workspace]
+resolver = "2"
+members = ["crates/velm", "examples/counter"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/paulzhang5511/velm"
 
-[dependencies]
-log = "0.4"
-crossbeam-channel = "0.5"
-vello_gpu = { git = "https://github.com/linebender/vello" }
-vello_common = { git = "https://github.com/linebender/vello" }
-wgpu = { version = "30.0" }
-raw-window-handle = "0.6"
-pollster = "1.0"
-bytemuck = { version = "1.0", features = ["derive"] }
-image = "0.25"
-rayon = "1.12"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-rstar = "0.12"
-redb = "4.2"
-
-[target.'cfg(target_os = "android")'.dependencies]
-android_logger = "0.15"
-raw-ndk-sys = "0.1.2"
-raw-window-handle = "0.6"
-jni = "0.22.4"
-ort = { version = "2.0.0-rc.13", default-features = false, features = [
-    "std",
-    "ndarray",
-    "api-28",
-] }
+[profile.release]
+opt-level = 3

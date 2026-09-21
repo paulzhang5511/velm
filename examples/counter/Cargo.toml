@@ -1,0 +1,16 @@
+[package]
+name = "counter"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "counter"
+crate-type = ["cdylib"]
+
+[dependencies]
+log = "0.4"
+velm = { path = "../../crates/velm" }
+
+[target.'cfg(target_os = "android")'.dependencies]
+raw-ndk-sys = "0.1.2"
+android_logger = "0.15"
