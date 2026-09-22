@@ -226,11 +226,11 @@ T1 workspace 骨架 + 空 cdylib 装机
 
 ### Checkpoint B — 纯逻辑层完成
 
-- [x] host `cargo test --workspace` 全绿（81 个 host 单测）；layout/hit/event/状态机覆盖 ≥85% 行 —— **覆盖率实测见下方状态**
+- [x] host `cargo test --workspace` 全绿（88 个 host 单测）；layout/hit/event/状态机覆盖 ≥85% 行 —— **实测 99.33% 行 / 100% 函数，见下方状态**
 - [x] `cargo fmt --check`、host clippy 零告警
 - [x] 逻辑泳道代码 grep 不到任何 android FFI 符号
 
-> **状态（2026-09-22，T8 完成后自检）**：`cargo test --workspace` 全绿（81 = T4 13 + T5 8 + T6 18 + T7 15 + T8 27）；`cargo fmt --check` 与 host `clippy -D warnings` 干净；对 `view/`、`layout/`、`app/`、`event/`、`engine/{events,hit_test}.rs` 全量 grep `raw_ndk|ANativeWindow|AInputQueue|ALooper|AInputEvent|extern "C"` **零命中**，android FFI 只存在于 `engine/activity_thread.rs`。覆盖率门槛待 `cargo-llvm-cov` 实测补记。
+> **状态（2026-09-22，T8 完成后自检）**：`cargo test --workspace` 全绿（81 = T4 13 + T5 8 + T6 18 + T7 15 + T8 27）；`cargo fmt --check` 与 host `clippy -D warnings` 干净；对 `view/`、`layout/`、`app/`、`event/`、`engine/{events,hit_test}.rs` 全量 grep `raw_ndk|ANativeWindow|AInputQueue|ALooper|AInputEvent|extern "C"` **零命中**，android FFI 只存在于 `engine/activity_thread.rs`。覆盖率门槛**已实测达标（2026-09-22）**：`cargo llvm-cov --workspace --ignore-filename-regex '(activity_thread|window)\.rs'`（排除只能在设备侧运行的 FFI 文件）→ **行覆盖 99.33%（450 行 / 未覆盖 3）、函数覆盖 100%（58/58）、区域覆盖 99.09%**。分项：`view/*`、`app/state.rs`、`engine/hit_test.rs`、`event/motion_event.rs`、`platform/mod.rs` 均 100%；`layout/measure.rs` 99.34%（1 行）、`engine/events.rs` 97.65%（2 行）、`app/activity.rs` 100%（补 `Intent::clone` 与 trait 默认 `on_touch_event` 两处用例后从 64.7% 拉满）。工具链：`cargo-llvm-cov 0.9.1` + `rustup component add llvm-tools-preview`（本机未预装，约 26 分钟安装）。
 
 ## Phase 2 — 平台与渲染（平台泳道，可与 Phase 1 并行）
 

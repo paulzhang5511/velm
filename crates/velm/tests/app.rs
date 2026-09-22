@@ -69,6 +69,39 @@ fn intent_none_is_constructible_and_copyable() {
     let copied = intent;
     assert_eq!(format!("{copied:?}"), "Intent::none()");
     assert_eq!(format!("{:?}", Intent::<Msg>::default()), "Intent::none()");
+    // 显式走一遍 Clone（Copy 语义下 `let copied = intent` 不触发 clone 实现）。
+    let cloned = intent.clone();
+    assert_eq!(format!("{cloned:?}"), "Intent::none()");
+}
+
+/// 不覆写 `on_touch_event` 的 Activity：走 trait 默认实现（恒不拦截）。
+struct Passive;
+
+impl Activity for Passive {
+    type Message = Msg;
+    type SavedInstanceState = ();
+
+    fn on_create(_saved: Option<()>) -> (Self, Intent<Msg>) {
+        (Self, Intent::none())
+    }
+
+    fn update(&mut self, _message: Msg) -> Intent<Msg> {
+        Intent::none()
+    }
+
+    fn on_draw(&self) -> View<Msg> {
+        View::text_view("passive")
+    }
+}
+
+#[test]
+fn default_on_touch_event_does_not_intercept() {
+    let mut runtime = ActivityRuntime::new(Passive::on_create(None).0);
+    assert!(
+        !runtime.on_touch_event(&down(10.0, 10.0)),
+        "trait 默认实现恒不拦截"
+    );
+    assert_eq!(runtime.pending(), 0);
 }
 
 // ── Activity 契约 ───────────────────────────────────────────────────────────
