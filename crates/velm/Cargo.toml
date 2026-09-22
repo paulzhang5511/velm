@@ -12,6 +12,9 @@ crate-type = ["rlib"]
 
 [dependencies]
 log = "0.4"
+# peniko 为纯 Rust（#![no_std]），host/android 均可编译：view/layout/hit_test
+# 需要使用 peniko::Color 而不引入任何 android 符号（SPEC §10.2）。
+peniko = "0.6"
 
 [target.'cfg(target_os = "android")'.dependencies]
 raw-ndk-sys = "0.1.2"
@@ -22,6 +25,5 @@ wgpu = { version = "29", default-features = false, features = ["vulkan"] }
 pollster = "0.4"
 raw-window-handle = "0.6"
 vello = { version = "0.10", default-features = false, features = ["wgpu"] }
-peniko = "0.6"
 # T2 Slice 3 文本（ADR-06：skrifa 直绘，与 vello 内部同版本 0.44）
 skrifa = "0.44"

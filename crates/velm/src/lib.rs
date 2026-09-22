@@ -13,6 +13,8 @@
 //! - `platform`：ANativeWindow 封装与 raw-window-handle（T9）
 //! - `render`：vello/wgpu 渲染器（T2/T10）
 
+pub mod view;
+
 #[cfg(target_os = "android")]
 pub mod engine;
 

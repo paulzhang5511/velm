@@ -858,6 +858,8 @@ pub enum View\<Msg> { TextView(TextView\<Msg>), ViewGroup(ViewGroup\<Msg>) }
 
 * `.set_on_click_listener(Msg)`：TextView/ViewGroup 均可绑定。
 
+* `.set_layout_params(LayoutParams)`（T4 新增，补充规格）：覆盖宽高规格与四向 margin。`linear_layout` 默认 MatchParent×MatchParent，需要 `Dp`/`WrapContent` 的按钮等节点通过它设置。
+
 约束：
 
 
@@ -865,6 +867,10 @@ pub enum View\<Msg> { TextView(TextView\<Msg>), ViewGroup(ViewGroup\<Msg>) }
 * `Msg` 在构造 / 布局阶段不需要任何 bound；仅 hit-test 返回消息时要求 `Msg: Clone`（与 docs 一致）。
 
 * 视图节点不实现 `PartialEq/Drop` 特殊语义；每帧随作用域释放（IV-4）。
+
+* `EdgeInsets { left, top, right, bottom }` 单位为 dp，布局阶段乘 density；提供 `all(f32)` 构造四向等距，`Default` 为全零。
+
+* 对非 TextView 调用 `set_text_size/set_text_color` 时以 `log::trace!` 记录后原样返回（**不启用 `debug_assert`**：debug 构建下 panic 会破坏 docs 的静默 no-op 语义，测试也需在 debug 下覆盖该路径）。
 
 ### 7.3 `event::motion_event` — 触控事件
 

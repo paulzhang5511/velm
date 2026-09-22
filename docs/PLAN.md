@@ -134,12 +134,18 @@ T1 workspace 骨架 + 空 cdylib 装机
 **Description:** 按 SPEC §7.2 实现 `LayoutDimension`、`Orientation`、`EdgeInsets`、`LayoutParams`（Default = WrapContent/0 margin）、`Rect::contains`、`Background`（color + corner_radius，ADR-10）、`TextView<Msg>`、`ViewGroup<Msg>`、`View<Msg>` 枚举与链式构造器（`linear_layout`、`text_view`、`set_text_size/color`、`set_background`、`set_on_click_listener`）；对容器设字号为 no-op + trace。
 
 **Acceptance criteria:**
-- [ ] host `cargo build -p velm` 通过（无 android 依赖）
-- [ ] 默认值、链式设置（含背景色/圆角）、点击消息绑定、no-op 行为均有单测断言
+- [x] host `cargo build -p velm` 通过（无 android 依赖）
+- [x] 默认值、链式设置（含背景色/圆角）、点击消息绑定、no-op 行为均有单测断言
 **Verification:** `cargo test -p velm view`、`cargo clippy -p velm -- -D warnings`
 **Dependencies:** T1（仅需 workspace 存在）
 **Files:** `crates/velm/src/view/{mod.rs,params.rs,text_view.rs,view_group.rs}`、`crates/velm/tests/view.rs`
 **Estimated scope:** M（5 文件）
+
+> **实施记录（2026-09-22，T4 完成）**：`peniko 0.6` 由 android-only 依赖提升为通用 `[dependencies]`（SPEC §10.2 要求 view/layout/hit_test 在 host 可编译，peniko 为 `#![no_std]` 纯 Rust，android 侧不受影响）。新增文件 `crates/velm/src/view/{mod,params,text_view,view_group}.rs` + `crates/velm/tests/view.rs`，`lib.rs` 无条件 `pub mod view`。**13 个 host 单测全绿**（默认值、`Rect` 闭区间四边界/四角、链式背景+圆角、点击消息绑定、容器 `set_text_size` no-op、`set_layout_params`、counter demo 嵌套建树）。门禁：host + aarch64 + x86_64 三目标 `cargo build/clippy -D warnings` 全绿，`cargo fmt --check` 干净。
+>
+> **两处规格补充（已回写 SPEC §7.2）**：① 新增 `.set_layout_params(LayoutParams)` —— 规格原构造器清单没有覆盖宽高的链式入口，而 T6/T11 的按钮必须指定 `Dp`；② no-op 误用提示**只记 `log::trace!`、不启用 `debug_assert`** —— debug 构建下 panic 会使 no-op 路径不可测，与 docs 静默语义冲突。
+>
+> **API 形状实证**：`peniko 0.6` 无根级 `Color` 定义，实为 `pub type Color = color::AlphaColor<color::Srgb>`；`AlphaColor` **只派生 `Clone/Copy/Debug`、无 `PartialEq`**，故 `Background` 不派生 `PartialEq`，测试改用 `to_rgba8()` 比对（`Rgba8` 有 `PartialEq`）——T10 渲染层沿用此比对方式。
 
 ### Task 5: event 模块（action 纯解码 + FFI 壳）
 
