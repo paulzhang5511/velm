@@ -14,6 +14,21 @@
 //! - `render`：绘制指令与 vello/wgpu 渲染器（T2/T10）
 //! - `error`：框架统一错误类型（ADR-11）
 
+// 公共 re-export（SPEC §7.9）：应用 crate 只需 `use velm::{...}`。
+pub use app::{Activity, Intent};
+pub use event::{MotionEvent, TouchAction};
+/// 颜色类型：`on_draw` 构造背景 / 文字颜色时使用（`peniko::Color` 的再导出，
+/// 省去应用 crate 再声明一次 peniko 依赖）。
+pub use peniko::Color;
+pub use view::{
+    Background, EdgeInsets, LayoutDimension, LayoutParams, Orientation, Rect, TextView, View,
+    ViewGroup,
+};
+
+/// 应用入口（android-only：依赖 NDK 回调表）。
+#[cfg(target_os = "android")]
+pub use engine::run_native_activity;
+
 pub mod app;
 pub mod engine;
 pub mod error;

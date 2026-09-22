@@ -6,9 +6,12 @@
 //! - 队列销毁走同步 ack：主线程回调阻塞到引擎线程完成 detach 才返回；
 //! - onDestroy 发 Quit 并 join 引擎线程。
 //!
-//! T3 为 spike：输入事件仅记录日志并 finish（按键交回框架默认处理，
-//! 触摸先消费）；TEA 分发在 T13 接入，窗口 acquire/release 在本任务
-//! Slice 3 接入。
+//! T11：实现 Activity 的应用在此接入——`run_native_activity::<A>()` 创建
+//! Activity 运行时并把它移入引擎线程；窗口就绪后走
+//! `on_draw → measure_and_layout → render` 出帧。
+//!
+//! 本文件仍是 T3 spike 的骨架：C 回调与 Looper 循环尚未改写为 §3.4 状态机
+//! （T12），输入事件仍只记录日志（T13 接入 hit-test 与消息分发）。
 
 use std::ffi::c_void;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -30,7 +33,12 @@ use raw_ndk_sys::{
     ANativeWindow_getWidth, ANativeWindow_release,
 };
 
+use crate::app::Activity;
+use crate::app::state::ActivityRuntime;
+use crate::engine::events::Viewport;
+use crate::layout::measure_and_layout;
 use crate::platform::window::NativeWindowWrapper;
+use crate::view::View;
 
 /// 日志 tag（logcat `-s VelmEngine`）。
 const LOG_TAG: &str = "VelmEngine";
@@ -76,16 +84,36 @@ struct Engine {
     join: Option<JoinHandle<()>>,
 }
 
-/// 由 cdylib 的 `ANativeActivity_onCreate` 调用：完成框架启动。
+/// 框架入口：由 cdylib 导出的 `ANativeActivity_onCreate` 调用（SPEC §7.9）。
+///
+/// `A` 是应用实现的 [`Activity`]。这里在**主线程**完成 `A::on_create` 并把
+/// 运行时一次性移入引擎线程，故要求 `A: Send`（Model 此后只在引擎线程被访问，
+/// 绝大多数 Model 自动满足）。
 ///
 /// # Safety
 /// `activity` 必须是 Android 框架传入的有效、非空、在本次 onCreate
 /// 调用期间存活的 [`ANativeActivity`] 指针。`saved_state` 可为空；
 /// 非空时其前 `saved_state_size` 字节必须可读（v1 不恢复状态，仅记录）。
-pub unsafe fn bootstrap(
+pub unsafe fn run_native_activity<A: Activity + Send>(
     activity: *mut ANativeActivity,
     saved_state: *mut c_void,
     saved_state_size: usize,
+) {
+    let runtime = ActivityRuntime::<A>::create();
+    log::info!("Activity 已创建，运行时移入引擎线程");
+    // SAFETY: 契约同 bootstrap。
+    unsafe { bootstrap(activity, saved_state, saved_state_size, runtime) }
+}
+
+/// 启动框架：初始化 logger、绑定 C 回调、启动引擎线程。
+///
+/// # Safety
+/// 同 [`run_native_activity`]。
+unsafe fn bootstrap<A: Activity + Send>(
+    activity: *mut ANativeActivity,
+    saved_state: *mut c_void,
+    saved_state_size: usize,
+    runtime: ActivityRuntime<A>,
 ) {
     let result = catch_unwind(AssertUnwindSafe(|| {
         android_logger::init_once(
@@ -116,7 +144,7 @@ pub unsafe fn bootstrap(
 
         let join = match thread::Builder::new().name("velm-engine".into()).spawn({
             let looper = looper.clone();
-            move || engine_main(rx, looper)
+            move || engine_main::<A>(rx, looper, runtime)
         }) {
             Ok(j) => j,
             Err(e) => {
@@ -150,8 +178,12 @@ pub unsafe fn bootstrap(
     }
 }
 
-/// 引擎线程主函数：prepare Looper、attach 输入队列、轮询分发。
-fn engine_main(rx: Receiver<EngineMsg>, looper_slot: Arc<AtomicPtr<ALooper>>) {
+/// 引擎线程主函数：prepare Looper、attach 输入队列、轮询分发与出帧。
+fn engine_main<A: Activity>(
+    rx: Receiver<EngineMsg>,
+    looper_slot: Arc<AtomicPtr<ALooper>>,
+    mut runtime: ActivityRuntime<A>,
+) {
     let outcome = catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: 本线程首次 prepare，返回与本线程绑定的 Looper；
         // ALLOW_NON_CALLBACKS 允许 pollOnce 直接返回 fd ident。
@@ -166,6 +198,13 @@ fn engine_main(rx: Receiver<EngineMsg>, looper_slot: Arc<AtomicPtr<ALooper>>) {
         let mut queue: *mut AInputQueue = ptr::null_mut();
         let mut window: Option<NativeWindowWrapper> = None;
         let mut renderer: Option<crate::render::VelloRenderer> = None;
+        // 当前窗口视口；`None` 时按 §3.4 丢弃重绘。
+        let mut viewport: Option<Viewport> = None;
+        // 最近一次**已布局**的视图树：T13 的 hit-test 直接复用它，避免
+        // 「一触重建两次」（SPEC §7.7 性能约束）。
+        let mut frame: Option<View<A::Message>> = None;
+        // 窗口创建 / 尺寸变化强制出帧（与消息驱动的 needs_draw 并列）。
+        let mut force_draw = false;
 
         'outer: loop {
             // 先排空控制通道，保证销毁/退出消息优先于输入处理。
@@ -212,9 +251,14 @@ fn engine_main(rx: Receiver<EngineMsg>, looper_slot: Arc<AtomicPtr<ALooper>>) {
                             Ok(gpu) => {
                                 log::info!("vello 渲染器已就绪");
                                 renderer = Some(gpu);
-                                // T11 在这里渲染首帧（on_draw → measure → render）：
-                                // T2 实证「不提交首帧则触摸不投递」，故首帧必须由
-                                // Activity 的真实视图树产出，不再是 spike 的探针帧。
+                                viewport = Some(Viewport {
+                                    width,
+                                    height,
+                                    density,
+                                });
+                                // T2 实证「不提交首帧则触摸不投递」：首帧必须由
+                                // Activity 的真实视图树产出（不再是 spike 探针帧）。
+                                force_draw = true;
                             }
                             Err(e) => log::error!("vello 渲染器初始化失败: {e}"),
                         }
@@ -228,6 +272,9 @@ fn engine_main(rx: Receiver<EngineMsg>, looper_slot: Arc<AtomicPtr<ALooper>>) {
                             // 先 drop 渲染器（停止 present、释放 surface），再释放窗口。
                             renderer.take();
                             window = None;
+                            // 无窗口后不得再出帧，缓存的树也一并失效（§3.4）。
+                            viewport = None;
+                            frame = None;
                         } else {
                             log::warn!("WindowDestroyed 与当前持有窗口不一致");
                         }
@@ -240,6 +287,12 @@ fn engine_main(rx: Receiver<EngineMsg>, looper_slot: Arc<AtomicPtr<ALooper>>) {
                             log::info!("窗口 resize：{width}x{height}");
                             gpu.resize(width.max(0) as u32, height.max(0) as u32);
                         }
+                        if let Some(vp) = viewport.as_mut() {
+                            vp.width = width;
+                            vp.height = height;
+                        }
+                        // 尺寸变了必须重新布局：resize 只用旧指令重画，坐标已过期。
+                        force_draw = true;
                     }
                     EngineMsg::Quit => {
                         renderer.take();
@@ -251,6 +304,13 @@ fn engine_main(rx: Receiver<EngineMsg>, looper_slot: Arc<AtomicPtr<ALooper>>) {
                         break 'outer;
                     }
                 }
+            }
+
+            // 出帧：窗口就绪 / 尺寸变化（force_draw）或消息驱动（needs_draw）。
+            if force_draw || runtime.needs_draw() {
+                force_draw = false;
+                runtime.take_draw_request();
+                draw_frame(&mut runtime, &mut renderer, viewport, &mut frame);
             }
 
             // SAFETY: 本线程持有 looper；空指针出参表示不取 fd/events/data。
@@ -277,6 +337,36 @@ fn engine_main(rx: Receiver<EngineMsg>, looper_slot: Arc<AtomicPtr<ALooper>>) {
         log::error!("引擎线程发生 panic，受控退出");
     }
     log::info!("引擎线程已退出");
+}
+
+/// 出帧：`on_draw → measure_and_layout → render`，并把**已布局**的树缓存进
+/// `frame`（T13 的 hit-test 复用，避免一触重建两次，SPEC §7.7）。
+///
+/// 无窗口 / 无渲染器时按 §3.4 丢弃本次重绘，只记 warn。
+fn draw_frame<A: Activity>(
+    runtime: &mut ActivityRuntime<A>,
+    renderer: &mut Option<crate::render::VelloRenderer>,
+    viewport: Option<Viewport>,
+    frame: &mut Option<View<A::Message>>,
+) {
+    let Some(vp) = viewport else {
+        log::warn!("无窗口视口，丢弃本次重绘（§3.4）");
+        return;
+    };
+    let Some(gpu) = renderer.as_mut() else {
+        log::warn!("无可用渲染器，丢弃本次重绘（§3.4）");
+        return;
+    };
+    let mut root = runtime.view();
+    measure_and_layout(
+        &mut root,
+        vp.width.max(0) as f32,
+        vp.height.max(0) as f32,
+        vp.density,
+    );
+    log::info!("出帧：{}x{} density={:.2}", vp.width, vp.height, vp.density);
+    gpu.render(&root);
+    *frame = Some(root);
 }
 
 /// 在引擎线程把输入队列 attach 到本线程 Looper。

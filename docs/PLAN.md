@@ -281,12 +281,24 @@ T1 workspace 骨架 + 空 cdylib 装机
 
 **Description:** counter 实现 `Activity`（counter model、on_draw 三行文本 + 两个按钮矩形，ADR-10 视觉）；引擎初版：onCreate 启动引擎线程、WindowCreated 时建 renderer、`on_draw → measure → render` 出首帧；暂不接输入队列。
 **Acceptance criteria:**
-- [ ] 真机启动即见 SC-2 的静态画面（计数 0、+1/-1 按钮）
-- [ ] 回前台/旋转后画面恢复
-**Verification:** 截图比对；logcat 首帧日志
+- [x] `examples/counter` 实现 `Activity`（计数文本 28sp 白 + 「+1」绿 / 「-1」红圆角按钮，ADR-10）；4 个 host 单测验证 dp 布局与消息绑定
+- [x] 引擎接线：`WindowCreated` 建渲染器 → `on_draw → measure_and_layout → render` 出首帧；`resize` 后重新布局并重出帧
+- [ ] 真机启动即见 SC-2 的静态画面（计数 0、+1/-1 按钮）（T13/设备验证）
+- [ ] 回前台/旋转后画面恢复（T13/设备验证）
+**Verification:** `cargo test -p counter`；截图比对；logcat 首帧日志
 **Dependencies:** T8、T10
 **Files:** `crates/velm/src/engine/activity_thread.rs`、`examples/counter/src/lib.rs`
 **Estimated scope:** M
+
+> **实施记录（2026-09-22，T11 完成）**：
+>
+> - 引擎入口改为 **`run_native_activity::<A>()`**（SPEC §7.9 的名字）：在主线程 `A::on_create` 建 `ActivityRuntime` 并一次性移入引擎线程，故要求 `A: Send`（Model 此后只在引擎线程访问）。原 `bootstrap` 降为私有泛型函数。
+> - 引擎循环新增**出帧步骤**：`force_draw`（窗口创建 / resize）或 `runtime.needs_draw()`（消息驱动，T13）→ `view() → measure_and_layout(w, h, density) → render()`；无窗口 / 无渲染器时按 §3.4 丢弃并 warn。
+> - 缓存**最近一次已布局**的视图树 `frame`，供 T13 的 hit-test 复用——SPEC §7.7 明确禁止「一触重建两次」。
+> - `WindowDestroyed` 时清 `viewport` 与 `frame`（无窗口后不得再出帧）；`resize` 后必须重新布局（renderer 内部的 `last_frame` 重画只是防止闪黑，坐标已过期）。
+> - `counter` 实现 Activity：`on_draw` 竖排 3 节点；host 单测 4 个（dp 布局几何、绘制指令条数、未布局树不产指令、update 反映到视图）。cdylib 在 host 上导出符号被 cfg 掉，故加 `#![cfg_attr(not(target_os="android"), allow(dead_code))]`。
+> - `lib.rs` 补齐 §7.9 的公共 re-export：`Activity/Intent`、`MotionEvent/TouchAction`、`view::*`、`Color`（省去应用 crate 再依赖 peniko）、android-only 的 `run_native_activity`。
+> - 门禁：host/aarch64/x86_64 三目标 clippy `-D warnings` 全绿、android 双 target `cargo build --workspace` 通过、fmt 干净；host 单测 96（velm）+ 4（counter）。真机静态画面待设备验证（Checkpoint C）。
 
 ### Checkpoint C — 静态画面
 

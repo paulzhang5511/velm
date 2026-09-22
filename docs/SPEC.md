@@ -1116,6 +1116,25 @@ pub unsafe extern "C" fn ANativeActivity\_onCreate(
 
 * 必须绑定的回调（v1）：`onNativeWindowCreated`、`onNativeWindowDestroyed`、`onInputQueueCreated`、`onInputQueueDestroyed`、`onDestroy`。其余回调（`onStart/onResume/onPause/onStop/onConfigurationChanged/onContentRectChanged/onWindowFocusChanged/onSaveInstanceState/onLowMemory/onTrimMemory`）v1 可留空但建议登记日志；保存 / 恢复在 P1。
 
+**T11 定稿（入口与出帧）：**
+
+* 入口函数名为 **`run_native_activity::<A>()`**（§7.9）：在主线程完成 `A::on_create` 并构造 `ActivityRuntime`，随后把运行时**一次性移入**引擎线程，故要求 `A: Send`（Model 此后只在引擎线程被访问）。原 spike 的 `bootstrap` 降为私有泛型函数。
+
+* 引擎循环中的**出帧步骤**（每轮 `pollOnce` 前执行一次）：
+
+```
+if force_draw || runtime.needs_draw() {          // force_draw：窗口创建 / resize
+    let mut root = runtime.view();               // on_draw（每帧最多一次）
+    measure_and_layout(&mut root, w, h, density);
+    renderer.render(&root);
+    frame = Some(root);                          // 缓存已布局树，供 hit-test 复用
+}
+```
+
+  无窗口视口或渲染器未就绪时丢弃本次重绘并 warn（§3.4），不 panic。
+
+* `WindowDestroyed` 同时清掉缓存的 `frame`；`resize` 后必须**重新布局**（渲染器内部的 `last_frame` 重画只为防止重配后闪黑，坐标已过期）。
+
 **引擎主循环（引擎线程，伪契约）：**
 
 
@@ -1221,6 +1240,12 @@ impl VelloRenderer {
 * `crates/velm/src/lib.rs` 只做模块声明与公共 re-export（`pub use app::{Activity, Intent}; pub use view::*; pub use event::...; pub use platform::...; pub use engine::run_native_activity`），**不含** `MainActivity` 与 `ANativeActivity_onCreate`。
 
 * `examples/counter/src/lib.rs`（独立 cdylib package）：实现计数器（竖排：计数文本 28sp 白色；「+1」20sp 绿底圆角矩形、「-1」红底，ADR-10；分别绑定 `ClickIncrement/ClickDecrement`），并在该 crate 内导出 `#[no_mangle] unsafe extern "C" fn ANativeActivity_onCreate`，内部仅做非空断言后调用 `velm::engine::run_native_activity::<MainActivity>(...)`。
+
+**T11 定稿补充：**
+
+* `lib.rs` 的 re-export 已落地：`Activity` / `Intent`、`MotionEvent` / `TouchAction`、`view::{View, ViewGroup, TextView, Rect, LayoutParams, LayoutDimension, Orientation, EdgeInsets, Background}`、`Color`（`peniko::Color` 的再导出，应用 crate 无需再声明 peniko 依赖）、android-only 的 `run_native_activity`。
+* counter 的 Model 为 `Counter { value: i32 }`，消息为 `Increment` / `Decrement`（原规格写 `ClickIncrement/ClickDecrement`，实现按更短的 Rust 惯用名）。`on_draw` 竖排：计数文本（28sp 白，MatchParent×72dp）+「+1」绿 /「-1」红圆角按钮（20sp 白字，200×72dp）。
+* counter 在 host 上也有 4 个单测（dp 布局几何、绘制指令条数、未布局树不产指令、update 反映到视图）；cdylib 的导出符号被 cfg 掉，故 crate 顶部用 `#![cfg_attr(not(target_os = "android"), allow(dead_code))]` 抑制 host 上的 dead_code 噪音。
 
 
 
