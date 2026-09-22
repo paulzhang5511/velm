@@ -1,1 +1,7 @@
 /target
+
+# 外部渲染仓库，仅作本地 path 依赖，不纳入版本控制
+vello/
+
+# macOS 系统文件
+.DS_Store
