@@ -396,6 +396,31 @@ onDestroy                 ──发布 Quit ──join
 
 * 输入队列与窗口的到达顺序不保证（docs 隐式假设窗口先于队列），引擎必须独立处理两者的任意先后顺序。
 
+**落地（T8 定稿）**：上述状态机实现为不依赖 Looper 的纯函数，位于 `engine::events`，host 可直接单测（§10.2）：
+
+```
+pub struct Viewport { pub width: i32, pub height: i32, pub density: f32 }
+
+pub enum EngineEvent { WindowCreated(Viewport), WindowResized { width, height }, WindowDestroyed, QueueCreated, QueueDestroyed, Message, Redraw, Quit }
+
+pub enum EngineAction { CreateSurface, ResizeSurface, DestroySurface, AttachQueue, DetachQueue, Exit }
+
+pub struct EngineState { /\* window: Option\<Viewport>, queue: bool, quit: bool, needs\_draw: bool \*/ }
+
+pub fn step(state: \&mut EngineState, event: EngineEvent) -> Vec\<EngineAction>;
+
+impl EngineState { pub fn take\_draw\_request(\&mut self) -> bool; /\* viewport/has\_window/has\_queue/is\_quitting \*/ }
+```
+
+补充不变量（均有单测钉住，见 `tests/state_machine.rs`）：
+
+* `EngineState` **不持有** ANativeWindow / AInputQueue 指针，只跟踪「有没有」和「尺寸是多少」；指针生命周期仍归 `activity_thread`。
+* 重绘以**标志位**（`take_draw_request`）而非 `EngineAction::Redraw` 表达：引擎每帧取一次，取走即清零。
+* 窗口销毁时**清除**尚未消费的重绘标志——无 surface 后不得再渲染。
+* `WindowResized` 不携带 density（T3 回调只给宽高），沿用旧 density，禁止回落到 1.0。
+* `Quit` 先回收仍持有的资源（`DestroySurface` → `DetachQueue`）再 `Exit`；置位后对任何事件都返回空动作集。
+* 窗口 / 队列重复创建、重复销毁属异常路径：前者先销毁旧资源再重建（warn），后者忽略（warn），均不 panic。
+
 
 
 ***
@@ -1017,6 +1042,23 @@ pub trait Activity: Sized + 'static {
 
 
 * v1 中 `on_create` 恒以 `None` 调用；`update`/`on_create` 返回的 `Intent` 被引擎记录但不执行（trace 日志），不得因此报错。
+
+* `Intent` 的 `Clone/Copy/Default/Debug` **手写实现**而非 derive：derive 会为 `Message` 加上相应约束，但 Intent 只持有 `PhantomData<Message>`，不该给使用者的消息类型加负担（T8 定稿）。
+
+* **TEA 运行时**（T8 定稿）：`app::state::ActivityRuntime<A: Activity>` 持有 Model、待处理消息队列与重绘标志，把「消费消息 → update → 请求重绘」从引擎循环中剥离为纯逻辑：
+
+```
+impl\<A: Activity> ActivityRuntime\<A> {
+    pub fn create() -> Self;                                  // 调 A::on\_create(None)
+    pub fn enqueue(\&mut self, message: A::Message);           // 只入队，不立即 update
+    pub fn drain(\&mut self) -> usize;                         // 逐条 update，返回处理条数
+    pub fn on\_touch\_event(\&mut self, event: \&MotionEvent) -> bool;  // Some → 入队并返回 true
+    pub fn view(\&self) -> View\<A::Message>;                    // on\_draw，每帧最多一次
+    pub fn take\_draw\_request(\&mut self) -> bool;
+}
+```
+
+  `enqueue` 与 `drain` 分离是为了保证「一帧内只因消息重建一次视图树」（§7.7）；`on_touch_event` 返回 `true` 表示已拦截，引擎必须跳过默认 hit-test（FR-I2）。
 
 * P1：Intent 任务执行器（后台任务完成后把 Message 送回队列）、SavedInstanceState 存取（届时按需重新引入 serde，存储方式另议；redb 已按 ADR-01 移除）。
 

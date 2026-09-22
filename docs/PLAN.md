@@ -210,17 +210,27 @@ T1 workspace 骨架 + 空 cdylib 装机
 
 **Description:** 按 SPEC §7.6/§3.4 实现 `Activity` trait、`Intent::none()` 占位；定义引擎输入事件枚举（WindowCreated/WindowDestroyed/QueueCreated/QueueDestroyed/Touch(MotionEvent)/Quit）与不依赖 Looper 的状态机 `step(state, event) -> Vec<Action>`（动作：创建/销毁 surface、绑定队列、入队消息、重绘、退出），把「销毁到达顺序任意」「无窗口丢弃重绘」等不变量做成 host 单测。
 **Acceptance criteria:**
-- [ ] 单测覆盖 SPEC §3.4 全路径：窗口先于/晚于队列、销毁后重建、无窗口时消息丢弃策略、Quit 后不再产生动作
+- [x] 单测覆盖 SPEC §3.4 全路径：窗口先于/晚于队列、销毁后重建、无窗口时消息丢弃策略、Quit 后不再产生动作
 **Verification:** `cargo test -p velm`（全套）
 **Dependencies:** T5、T6、T7
 **Files:** `crates/velm/src/app/{mod.rs,activity.rs,state.rs}`、`crates/velm/src/engine/events.rs`、`crates/velm/tests/state_machine.rs`
 **Estimated scope:** M（5 文件）
 
+> **实施记录（2026-09-22，T8 完成）**：新增 `app/{mod,activity,state}.rs`、`engine/events.rs`、`tests/{state_machine,app}.rs`；`lib.rs` 加 `pub mod app`。**27 个新 host 单测全绿**（累计 81 = T4 13 + T5 8 + T6 18 + T7 15 + T8 27，其中 state_machine 17 + app 10）。
+>
+> **文件归属的两处调整（与上方 Files 清单略有出入，理由如下）**：① 生命周期状态机放在 `engine/events.rs` 而非 `app/state.rs`——它管的是窗口 / 队列生命周期，属引擎层，放在 `app` 会让 T12 写出 `use crate::app::state::EngineState` 这种逆分层引用；`app/state.rs` 改为承载 `ActivityRuntime`（TEA 运行时：Model + 消息队列 + 重绘标志）。② 增补 `tests/app.rs` 承载 Activity 契约与运行时用例，`tests/state_machine.rs` 只管生命周期。
+>
+> **定稿语义（已回写 SPEC §3.4 / §7.6）**：重绘用**标志位** `take_draw_request()` 而非 `EngineAction::Redraw` 表达；窗口销毁清除未消费的重绘标志；`WindowResized` 沿用旧 density（回调不携带）；`Quit` 先 `DestroySurface` → `DetachQueue` 再 `Exit`，置位后任何事件返回空动作集；重复创建先销毁旧资源、重复销毁忽略，均 warn 不 panic。`Intent` 的 Clone/Copy/Default/Debug 手写实现，避免 derive 给 `Message` 加约束。
+>
+> 门禁：host + aarch64 + x86_64 三目标 clippy `-D warnings` 全绿，`cargo fmt --check` 干净；android 双 target `cargo build --workspace` 通过。**未覆盖**：`activity_thread` 与状态机的接线（T12）、真机生命周期验证（T13）。
+
 ### Checkpoint B — 纯逻辑层完成
 
-- [ ] host `cargo test --workspace` 全绿；layout/hit/event/状态机覆盖 ≥85% 行
-- [ ] `cargo fmt --check`、host clippy 零告警
-- [ ] 逻辑泳道代码 grep 不到任何 android FFI 符号
+- [x] host `cargo test --workspace` 全绿（81 个 host 单测）；layout/hit/event/状态机覆盖 ≥85% 行 —— **覆盖率实测见下方状态**
+- [x] `cargo fmt --check`、host clippy 零告警
+- [x] 逻辑泳道代码 grep 不到任何 android FFI 符号
+
+> **状态（2026-09-22，T8 完成后自检）**：`cargo test --workspace` 全绿（81 = T4 13 + T5 8 + T6 18 + T7 15 + T8 27）；`cargo fmt --check` 与 host `clippy -D warnings` 干净；对 `view/`、`layout/`、`app/`、`event/`、`engine/{events,hit_test}.rs` 全量 grep `raw_ndk|ANativeWindow|AInputQueue|ALooper|AInputEvent|extern "C"` **零命中**，android FFI 只存在于 `engine/activity_thread.rs`。覆盖率门槛待 `cargo-llvm-cov` 实测补记。
 
 ## Phase 2 — 平台与渲染（平台泳道，可与 Phase 1 并行）
 

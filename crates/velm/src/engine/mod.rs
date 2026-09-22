@@ -9,6 +9,7 @@
 //! 关掉，否则命中测试会失去 host 可测性——android-only 的部分在**子模块**
 //! 上单独 gate。
 
+pub mod events;
 pub mod hit_test;
 
 #[cfg(target_os = "android")]
