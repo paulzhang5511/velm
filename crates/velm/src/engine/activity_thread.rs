@@ -24,20 +24,20 @@ use std::thread;
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use raw_ndk_sys::{
     ACONFIGURATION_DENSITY_ANY, ACONFIGURATION_DENSITY_NONE, AConfiguration_delete,
-    AConfiguration_fromAssetManager, AConfiguration_getDensity, AConfiguration_new,
-    AINPUT_EVENT_TYPE_KEY, AINPUT_EVENT_TYPE_MOTION, AInputEvent_getType, AInputQueue,
+    AConfiguration_fromAssetManager, AConfiguration_getDensity, AConfiguration_new, AInputQueue,
     AInputQueue_attachLooper, AInputQueue_detachLooper, AInputQueue_finishEvent,
-    AInputQueue_getEvent, AInputQueue_preDispatchEvent, AKeyEvent_getKeyCode, ALOOPER_POLL_ERROR,
+    AInputQueue_getEvent, AInputQueue_preDispatchEvent, ALOOPER_POLL_ERROR,
     ALOOPER_PREPARE_ALLOW_NON_CALLBACKS, ALooper, ALooper_pollOnce, ALooper_prepare,
-    AMotionEvent_getAction, AMotionEvent_getX, AMotionEvent_getY, ANativeActivity,
-    ANativeActivityCallbacks, ANativeWindow, ANativeWindow_acquire, ANativeWindow_getHeight,
-    ANativeWindow_getWidth, ANativeWindow_release,
+    ANativeActivity, ANativeActivityCallbacks, ANativeWindow, ANativeWindow_acquire,
+    ANativeWindow_getHeight, ANativeWindow_getWidth, ANativeWindow_release,
 };
 
 use crate::app::Activity;
 use crate::app::state::ActivityRuntime;
 use crate::engine::app_context::{AppContext, EngineMsg, NdkPtr, null_looper_slot};
 use crate::engine::events::{EngineAction, EngineEvent, EngineState, Viewport, step};
+use crate::engine::hit_test::perform_hit_test;
+use crate::event::{MotionEvent, TouchAction};
 use crate::layout::measure_and_layout;
 use crate::platform::window::NativeWindowWrapper;
 use crate::render::VelloRenderer;
@@ -202,18 +202,7 @@ fn engine_main<A: Activity>(
                 }
             }
 
-            // 出帧：状态机置位（窗口创建 / resize / Redraw）或消息驱动
-            // （`ActivityRuntime` 的 needs_draw，T13 起有消息）。
-            if state.take_draw_request() || runtime.needs_draw() {
-                runtime.take_draw_request();
-                draw_frame(
-                    &mut runtime,
-                    &mut res.renderer,
-                    state.viewport(),
-                    &mut res.frame,
-                );
-            }
-
+            // 2) 轮询等待：输入事件在此被取出、解码并转成应用消息（T13）。
             // SAFETY: 本线程持有 looper；空指针出参表示不取 fd/events/data。
             let poll_rc = unsafe {
                 ALooper_pollOnce(
@@ -224,13 +213,32 @@ fn engine_main<A: Activity>(
                 )
             };
 
-            if poll_rc == INPUT_QUEUE_IDENT && !res.queue.is_null() {
-                drain_input(res.queue);
+            let queue = res.queue;
+            if poll_rc == INPUT_QUEUE_IDENT && !queue.is_null() {
+                drain_input(queue, &mut runtime, &mut state, &mut res);
             } else if poll_rc == ALOOPER_POLL_ERROR {
                 log::error!("ALooper_pollOnce 返回 ERROR，引擎线程退出");
                 break;
             }
             // WAKE(-1) / TIMEOUT(-3) / CALLBACK(-2，未用回调) 均回到顶部收消息。
+
+            // 3) 消费消息：逐条 `update`，合并成**一次**重绘（§7.7）——
+            //    不允许每条消息各重建一次视图树。
+            let handled = runtime.drain();
+            if handled > 0 {
+                log::info!("[App] 本帧处理 {handled} 条消息");
+            }
+
+            // 4) 出帧：状态机置位（窗口创建 / resize / Message）或运行时置位。
+            if state.take_draw_request() || runtime.needs_draw() {
+                runtime.take_draw_request();
+                draw_frame(
+                    &mut runtime,
+                    &mut res.renderer,
+                    state.viewport(),
+                    &mut res.frame,
+                );
+            }
         }
     }));
 
@@ -459,8 +467,17 @@ fn detach_queue(slot: &mut *mut AInputQueue) {
     log::info!("InputQueue 已 detach: {queue:p}");
 }
 
-/// 取出并处理队列中当前所有待处理输入事件（spike：日志 + finish）。
-fn drain_input(queue: *mut AInputQueue) {
+/// 取出并处理队列中当前所有待处理输入事件（T13：解码 → 拦截/hit-test → 入队）。
+///
+/// 每条取出的事件**恰好** `finishEvent` 一次（FR-I5）；唯一例外是
+/// `preDispatchEvent` 返回非 0（事件已被 IME 接管），与 `android_native_app_glue`
+/// 一致地直接放弃——此时 finish 会让 IME 丢事件。
+fn drain_input<A: Activity>(
+    queue: *mut AInputQueue,
+    runtime: &mut ActivityRuntime<A>,
+    state: &mut EngineState,
+    res: &mut Resources<A::Message>,
+) {
     loop {
         let mut event = ptr::null_mut();
         // SAFETY: queue 已 attach 且在引擎线程独占访问。
@@ -472,26 +489,18 @@ fn drain_input(queue: *mut AInputQueue) {
         // SAFETY: event 由 getEvent 借出，finish 前有效。
         let pre = unsafe { AInputQueue_preDispatchEvent(queue, event) };
         if pre != 0 {
-            // IME 等预派发已接管：按 NDK 契约放弃本轮处理且不 finish。
             continue;
         }
 
-        // SAFETY: 同上；仅读取事件字段。
-        let handled = unsafe {
-            let event_type = AInputEvent_getType(event);
-            if event_type == AINPUT_EVENT_TYPE_KEY as i32 {
-                let key_code = AKeyEvent_getKeyCode(event);
-                log::info!("KeyEvent: keyCode={key_code}（handled=0，交回框架默认处理）");
-                0
-            } else if event_type == AINPUT_EVENT_TYPE_MOTION as i32 {
-                let action = AMotionEvent_getAction(event) & 0xff;
-                let x = AMotionEvent_getX(event, 0);
-                let y = AMotionEvent_getY(event, 0);
-                log::info!("MotionEvent: action={action} x={x:.1} y={y:.1}（spike 暂消费）");
+        // SAFETY: 同上，from_ndk 只读取事件字段、不转移所有权。
+        let handled = match unsafe { MotionEvent::from_ndk(event) } {
+            Some(motion) => {
+                handle_motion(runtime, state, res, &motion);
+                // 触摸由框架消费：不再交回系统默认处理。
                 1
-            } else {
-                0
             }
+            // 非 motion（按键等）或 v1 不支持的 action：交回框架默认处理。
+            None => 0,
         };
 
         // SAFETY: 每个 getEvent 取出的事件恰好 finish 一次。
@@ -499,7 +508,59 @@ fn drain_input(queue: *mut AInputQueue) {
     }
 }
 
-/// 从 `activity.instance` 借用引擎句柄。
+/// 处理一次触控事件（FR-I1 ~ FR-I4）。
+///
+/// 顺序固定：**先**给 `Activity::on_touch_event`（开发者拦截优先，FR-I2），
+/// 返回 `Some` 则不再走默认 hit-test；否则仅在 `ActionDown` 时做一次
+/// hit-test（按住不连发，FR-I3）。
+fn handle_motion<A: Activity>(
+    runtime: &mut ActivityRuntime<A>,
+    state: &mut EngineState,
+    res: &mut Resources<A::Message>,
+    motion: &MotionEvent,
+) {
+    log::info!(
+        "[Input] action={:?} x={:.1} y={:.1}",
+        motion.action,
+        motion.x,
+        motion.y
+    );
+
+    // 1) 拦截优先：所有 action 对 on_touch_event 可见（FR-I3），返回 Some
+    //    即入队且跳过 hit-test（FR-I2）。
+    if runtime.on_touch_event(motion) {
+        note_message(state);
+        return;
+    }
+
+    // 2) 默认点击语义：只在 DOWN 命中一次（FR-I1 / FR-I3）。
+    if motion.action != TouchAction::ActionDown {
+        return;
+    }
+
+    // 复用「当前帧已布局」的那棵树，**绝不**为此再调一次 on_draw——docs 的
+    // 「ActionDown 分支单独 on_draw」会造成一触重建两次（§7.7 禁止）。
+    let Some(frame) = res.frame.as_ref() else {
+        log::warn!("[Input] 无已布局视图树，DOWN 事件丢弃");
+        return;
+    };
+    match perform_hit_test(frame, motion.x, motion.y) {
+        Some(message) => {
+            runtime.enqueue(message);
+            note_message(state);
+        }
+        // 空白 / 未绑定监听：不产生消息、不重绘（FR-I4）。
+        None => log::info!("[Input] 未命中任何节点，不重绘"),
+    }
+}
+
+/// 记录「产生了一条应用消息」：交给状态机决定是否置重绘标志（无窗口时丢弃，
+/// §3.4）。`Message` 事件不产生动作，此处只借用它的判定逻辑。
+fn note_message(state: &mut EngineState) {
+    let actions = step(state, EngineEvent::Message);
+    debug_assert!(actions.is_empty(), "Message 事件不应产生动作");
+}
+
 /// 在 C 回调边界捕获 panic（ADR-11）。
 fn guard(f: impl FnOnce()) {
     if catch_unwind(AssertUnwindSafe(f)).is_err() {

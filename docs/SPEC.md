@@ -1147,6 +1147,22 @@ if force_draw || runtime.needs_draw() {          // force_draw：窗口创建 / 
 
 * 输入事件：`AInputQueue_preDispatchEvent` 返回非 0 表示事件已被 IME 接管，**不**调用 `finishEvent`（与 `android_native_app_glue` 一致）；其余所有路径（含非 motion 事件）保证 `finishEvent` 恰好一次。
 
+**T13 定稿（输入闭环与合并重绘）：**
+
+* 引擎主循环每轮顺序固定为：**先排空控制通道 → `ALooper_pollOnce` → `drain_input` 解码触控 → `runtime.drain()` 合并重绘 → 出帧**（§8.2）。「收消息」与「出帧」之间只调一次 `on_draw`，一帧内不论多少条消息都只重建一次视图树（§7.7 硬性约束）。
+
+* `drain_input`（v1 只处理 motion）：每条 `getEvent` 取出的事件**恰好 `finishEvent` 一次**（FR-I5）；`preDispatchEvent` 返回非 0（IME 接管）时按 `android_native_app_glue` 一致地直接放弃、不 finish（finish 会让 IME 丢事件）；非 motion 事件（按键等）暂不接受，finishEvent 时 `handled=0` 交回框架默认处理。
+
+* `handle_motion` 的分支顺序（FR-I1~FR-I4）：
+  1. **拦截优先**：所有 action 先给 `Activity::on_touch_event`；返回 `Some(msg)` 则入队并**跳过**默认 hit-test（FR-I2），开发者可在任意手势阶段吞掉事件；
+  2. 默认点击语义**仅 `ActionDown` 触发一次 hit-test**（FR-I1 / FR-I3）：`ActionMove/Up/Cancel` 不命中，避免「按住连发」；
+  3. hit-test **复用缓存的 `res.frame`**（上一次已布局的树），**绝不**为此再调 `on_draw`——docs 旧方案「ActionDown 分支单独 on_draw」会一触重建两次，违反 §7.7；无已布局树（首帧前）时丢弃 DOWN；
+  4. 命中 → `runtime.enqueue(msg)`；空白 / 未绑监听 → 不产生消息、不重绘（FR-I4）。
+
+* `note_message`：触控产生消息时调用 `step(state, Message)`，仅借用状态机判定（无窗口时丢弃重绘请求，§3.4）；`Message` 事件本身不产生 `EngineAction`，故 `debug_assert!(actions.is_empty())`。
+
+* 坐标系一致：hit-test 的 `x/y` 直接取自 `MotionEvent` 的物理像素坐标，与 `measure_and_layout` 输出的 `computed_rect` 同坐标系（ADR-12）——无 viewport 变换 / 刘海偏移时无需预处理。
+
 **引擎主循环（引擎线程，伪契约）：**
 
 

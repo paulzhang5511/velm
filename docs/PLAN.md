@@ -334,17 +334,28 @@ T1 workspace 骨架 + 空 cdylib 装机
 
 **Description:** 按 SPEC §7.7/§8.2 接线：事件取出→MotionEvent 解析→`on_touch_event` 拦截优先；否则 ActionDown 复用「当前帧已布局 View 树」做 hit-test（避免 docs 的一触双重建）；消息 VecDeque FIFO；逐个 update、合并一次重绘；measure(density) → render；MOVE/UP/CANCEL 仅走拦截路径；空白处不重绘。
 **Acceptance criteria:**
-- [ ] SC-3：点 +1/-1 计数正确，连点 20 次数字准确
-- [ ] SC-4：空白无反应、按住不连发；拦截返回 Some 时不触发 hit-test
-- [ ] 每个输入事件恰好 finishEvent 一次
+- [x] 输入闭环接线正确：`drain_input` → `on_touch_event` 拦截优先 → `ActionDown` 复用 `frame` hit-test → `enqueue` → `runtime.drain` 合并一次重绘 → 出帧（§7.7/§8.2）
+- [x] 每个输入事件恰好 `finishEvent` 一次；`MOVE/UP/CANCEL` 不命中、空白不重绘、`on_touch_event` 返回 `Some` 时跳过 hit-test（代码契约）
+- [ ] SC-3：点 +1/-1 计数正确、连点 20 次准确（**设备验证**）
+- [ ] SC-4：空白无反应、按住不连发（**设备验证**，logcat 核对）
 **Verification:** 手工点击 + 录屏计数；logcat 消息/重绘日志核对
 **Dependencies:** T12
 **Files:** `crates/velm/src/engine/activity_thread.rs`、`crates/velm/src/engine/events.rs`（如需）
 **Estimated scope:** M
 
+> **实施记录（2026-09-23，T13 完成）**：
+>
+> - 引擎主循环重排为「控制消息 → `pollOnce` → `drain_input` → `runtime.drain` 合并重绘 → 出帧」（§8.2）；一帧内不论多少条消息只调一次 `on_draw`（§7.7）。
+> - `drain_input`（android-only）：每条事件恰好 `finishEvent` 一次；`preDispatch != 0` 放弃（IME 接管、不 finish）；非 motion 事件 `finishEvent` 时 `handled=0` 交回框架。
+> - `handle_motion`：① 拦截优先——所有 action 先给 `on_touch_event`，`Some` 入队并跳过 hit-test（FR-I2）；② 仅 `ActionDown` 命中一次（FR-I1/I3，按住不连发）；③ 复用缓存 `frame`（已布局树）做 hit-test，绝不重调 `on_draw`（docs 旧方案会一触双重建）；④ 命中 `enqueue`，空白/未绑监听不重绘（FR-I4）。
+> - `note_message`：消息事件交状态机判定（无窗口丢弃重绘，§3.4），`Message` 不产生 `EngineAction`（`debug_assert` 守门）。
+> - 坐标系一致：`MotionEvent` 物理像素 xy 与 `computed_rect` 同坐标系（ADR-12），无偏移时无需预处理。
+> - 门禁：host/aarch64/x86_64 三目标 clippy `-D warnings` 全绿、fmt 干净、host 单测 100（96 velm + 4 counter，本次未新增——输入闭环是 android-only FFI 边界，host 不可编译；hit-test 与状态机不变量已由 T7/T8 单测覆盖）。SC-3/SC-4 行为待设备验证（Checkpoint D）。
+
 ### Checkpoint D — 端到端闭环
 
-- [ ] SC-2/3/4 通过；交互路径 clippy/test 全绿
+- [x] 交互路径（T11/T13）clippy/test 全绿
+- [ ] SC-2/3/4 真机通过（与 Checkpoint C 合并设备验证）
 
 ## Phase 4 — 硬化与交付
 
