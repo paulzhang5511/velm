@@ -793,6 +793,26 @@ impl HasDisplayHandle for NativeWindowWrapper { /\* AndroidDisplayHandle \*/ }
 
 * rwh 0.6 的 `window_handle()` 返回 `Result`，句柄内含生命周期，渲染器持有期间不得销毁窗口（由 §3.3 销毁同步保证）。
 
+**T9 定稿补充：**
+
+* **所有权**（T9 定稿）：`from_ndk` 自己 `ANativeWindow_acquire`、`Drop` 里 `ANativeWindow_release`，两者配对；结构体内的 `owned` 标志记录是否持有该引用（SPEC 原注释「owned/acquired 状态明确」的落地）。**因此回调侧不得再 acquire**——T3 spike 的 `native_window_created` 目前仍自己 acquire 一次，T12 重写回调时必须移除，否则引用计数不平衡、窗口永不释放。
+
+* 包装类型**不实现 `Send`/`Sync`**：窗口只在引擎线程构造、使用与释放；跨线程只传裸指针（由 `activity_thread` 负责）。
+
+* acquire 的时序安全性依赖 §3.3 的销毁同步：引擎按 FIFO 先处理 `WindowCreated` 再处理 `WindowDestroyed`，且主线程在销毁回调里阻塞等 ack，故 acquire 必然早于框架的最后一次 release。
+
+* **密度换算抽为纯函数**（host 可测，§10.2）：
+
+```
+pub struct ScreenConfig { pub width: i32, pub height: i32, pub density: f32 }
+
+pub const DENSITY\_MEDIUM\_DPI: i32 = 160;                  // ACONFIGURATION\_DENSITY\_MEDIUM
+
+pub fn density\_from\_dpi(dpi: i32) -> f32;                 // ANY(65534)/NONE(65535)/≤0 一律 1.0
+```
+
+  `ANY`/`NONE` 是资源的通配语义、不是真实 dpi，必须与 ≤0 一起兜底 1.0（兜底值表示「按 mdpi 处理」而非出错，调用方 warn 后继续渲染）。常量手写 + android 编译期 `const assert` 校验（防漂移，模式同 §7.3）。
+
 ### 7.2 `view` — 视图树（params /text\_view/view\_group）
 
 

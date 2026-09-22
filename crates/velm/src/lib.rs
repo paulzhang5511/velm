@@ -17,6 +17,7 @@ pub mod app;
 pub mod engine;
 pub mod event;
 pub mod layout;
+pub mod platform;
 pub mod view;
 
 #[cfg(target_os = "android")]

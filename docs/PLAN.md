@@ -238,12 +238,20 @@ T1 workspace 骨架 + 空 cdylib 装机
 
 **Description:** 按 SPEC §7.1、ADR-11/12 实现 `NativeWindowWrapper`：`from_ndk`（acquire）、`Drop`（release）、`configure_buffers`（RGBA_8888，失败返回错误码不 panic）、size/format、rwh 0.6 `HasWindowHandle/HasDisplayHandle`；density 经 AConfiguration 获取并封装为 `ScreenConfig { density, w, h }`。
 **Acceptance criteria:**
-- [ ] android 构建通过；真机日志打印正确宽高/density；重复 acquire/release 平衡（日志/压测无窗口泄漏报错）
+- [x] android 构建通过（`clippy -D warnings` + `cargo build --workspace` 双 target）；真机日志打印正确宽高/density；重复 acquire/release 平衡（日志/压测无窗口泄漏报错）——**真机两项待 T13**
 - [ ] rwh 0.6 句柄能被 T10 的 wgpu 接受
 **Verification:** `cargo clippy -p velm --target aarch64-linux-android -- -D warnings`；真机 logcat
 **Dependencies:** T3
 **Files:** `crates/velm/src/platform/{mod.rs,window.rs}`（density 若超过 2 文件上限放 window.rs 内）
 **Estimated scope:** S
+
+> **实施记录（2026-09-22，T9 完成）**：新增 `platform/{mod,window}.rs` + `tests/platform.rs`；`lib.rs` 加 `pub mod platform`。**5 个 host 单测全绿**（累计 86 = 前 81 + T9 5）；host/aarch64/x86_64 三目标 clippy `-D warnings` 与 android 双 target build 全绿。
+>
+> **host 可测性**：`ScreenConfig` 与 `density_from_dpi` 放 `platform/mod.rs`（host 可见），`window` 子模块 android-only gate——同 `engine/hit_test` 的 gate 约定。density 常量（160 / ANY 65534 / NONE 65535）手写并用 android 编译期 `const assert` 校验防漂移。
+>
+> **所有权语义（已回写 SPEC §7.1）**：`from_ndk` 自 acquire、`Drop` 自 release，`owned` 标志记录状态；**T12 重写回调时必须移除 T3 spike 在 `native_window_created` 里的那次 acquire**，否则引用计数不平衡、窗口永不释放。包装类型不实现 `Send`/`Sync`，窗口只在引擎线程构造与释放。
+>
+> **待验证**：`from_ndk`/`configure_buffers`/rwh 句柄只能在设备侧验证；rwh 句柄能否被 T10 的 wgpu 接受将在 T10 建 surface 时确认。
 
 ### Task 10: render/vello_renderer
 
