@@ -5,8 +5,125 @@ members = ["crates/velm", "examples/counter"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+# T16：本地 vello_gpu/vello_common/glifo 经 path 依赖进入本 workspace 后会被「重定根」，
+# 其 `rust-version.workspace = true` 须由本 workspace 提供（vello 侧 MSRV 1.89）。
+rust-version = "1.89"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/paulzhang5511/velm"
+
+# vello 侧 crates 以 `[lints] workspace = true` 继承其 workspace 的 lint 表；重定根后须在此
+# 提供等价表，否则会以默认 lint（多为 warn，配合 `-D warnings` 即 deny）重新检查 vello 的
+# crates 而失败。下表整体搬自 vello 仓库根的 `[workspace.lints]`，使 re-root 后的 vello crates
+# 的 lint 行为与 vello 自身 workspace 一致（velm 自身 crate 不声明 `[lints] workspace = true`，
+# 故不受此表影响）。
+[workspace.lints]
+rust.keyword_idents_2024 = "forbid"
+rust.non_ascii_idents = "forbid"
+rust.non_local_definitions = "forbid"
+rust.unsafe_op_in_unsafe_fn = "forbid"
+rust.elided_lifetimes_in_paths = "warn"
+rust.missing_debug_implementations = "warn"
+rust.missing_docs = "warn"
+rust.trivial_numeric_casts = "warn"
+rust.unnameable_types = "warn"
+rust.unreachable_pub = "warn"
+rust.unused_import_braces = "warn"
+rust.unused_lifetimes = "warn"
+rust.unused_macro_rules = "warn"
+rust.unused_qualifications = "warn"
+clippy.too_many_arguments = "allow"
+clippy.allow_attributes_without_reason = "warn"
+clippy.cast_possible_truncation = "warn"
+clippy.collection_is_never_read = "warn"
+clippy.default_trait_access = "warn"
+clippy.dbg_macro = "warn"
+clippy.debug_assert_with_mut_call = "warn"
+clippy.doc_markdown = "warn"
+clippy.fn_to_numeric_cast_any = "warn"
+clippy.infinite_loop = "warn"
+clippy.large_stack_arrays = "warn"
+clippy.mismatching_type_param_order = "warn"
+clippy.missing_assert_message = "warn"
+clippy.missing_fields_in_debug = "warn"
+clippy.same_functions_in_if_condition = "warn"
+clippy.semicolon_if_nothing_returned = "warn"
+clippy.should_panic_without_expect = "warn"
+clippy.todo = "warn"
+clippy.unseparated_literal_suffix = "warn"
+clippy.use_self = "warn"
+# 注意：下列 cargo 清单类 lint 故意不纳入——它们会检查「所有 workspace 成员」的
+# package 元数据（description/license/repository/readme/keywords/categories），而 velm 与
+# examples/counter 并不具备这些字段（此前无 `[workspace.lints]` 时它们以默认 allow 通过）。
+# vello 侧 crates 自带这些元数据、本就合规，故省略不影响重定根后的检查。
+# clippy.cargo_common_metadata = "warn"
+# clippy.negative_feature_names = "warn"
+# clippy.redundant_feature_names = "warn"
+# clippy.wildcard_dependencies = "warn"
+
+# vello 的 crates 在 vello 仓库内通过 `workspace = true` 引用下列依赖；重定根后须在此提供同名
+# 条目。path 类条目已改写为相对本 workspace 根解析（`vello/...`）。本表整体镜像自 vello
+# 仓库根的 `[workspace.dependencies]`，仅 re-root 后的 vello crates 经 `workspace = true` 实际
+# 引用的条目会被拉入构建；其余仅为满足解析而存在的占位定义。
+[workspace.dependencies]
+bytemuck = { version = "1.25.0", features = ["derive"] }
+skrifa = { version = "0.44.0", default-features = false, features = ["autohint_shaping"] }
+peniko = { version = "0.6.1", default-features = false }
+kurbo = { version = "0.13.1", default-features = false }
+futures-intrusive = "0.5.0"
+guillotiere = { version = "0.7.0", default-features = false }
+hashbrown = { version = "0.17.1", default-features = false, features = ["default-hasher"] }
+core_maths = "0.1.1"
+foldhash = { version = "0.2.0", default-features = false }
+smallvec = "1.15.1"
+static_assertions = "1.1.0"
+thiserror = { version = "2.0.18", default-features = false }
+oxipng = { version = "10.1.1", default-features = false }
+png = "0.18.1"
+rayon = "1.12.0"
+thread_local = "1.1.9"
+crossbeam-channel = "0.5.15"
+ordered-channel = { version = "1.2.0", features = ["crossbeam-channel"] }
+fearless_simd = { version = "0.7.0", default-features = false }
+js-sys = "0.3.92"
+wasm-bindgen = "0.2.115"
+wasm-bindgen-futures = "0.4.64"
+wasm-bindgen-test = "0.3.64"
+web-sys = "0.3.92"
+vello_common = { version = "0.2.0", path = "vello/vello_common", default-features = false }
+vello_cpu = { version = "0.2.0", path = "vello/vello_cpu" }
+vello_gpu = { version = "0.2.0", path = "vello/vello_gpu", default-features = false }
+vello_gpu_shaders = { version = "0.2.0", path = "vello/vello_gpu_shaders" }
+glifo = { version = "0.3.0", path = "vello/glifo", default-features = false }
+vello_example_scenes = { path = "vello/vello_tests/vello_example_scenes" }
+vello_dev_macros = { path = "vello/vello_tests/vello_dev_macros" }
+wgpu = { version = "30.0.0", default-features = false, features = ["std", "wgsl"] }
+naga = { version = "30.0.0", default-features = false }
+log = "0.4.29"
+image = { version = "0.25.10", default-features = false }
+clap = "4.6.1"
+anyhow = "1.0.102"
+pollster = "0.4.0"
+web-time = "1.1.0"
+wgpu-profiler = "0.28.0"
+winit = "0.30.13"
+scenes = { path = "vello/research/examples/scenes" }
+svg = "0.18.0"
+criterion = { version = "0.5.1", default-features = false }
+rand = { version = "0.9.4", default-features = false, features = ["std_rng"] }
+usvg = "0.47"
+once_cell = "1.21.4"
+console_error_panic_hook = "0.1.7"
+console_log = "1.0"
+proc-macro2 = "1.0.106"
+syn = { version = "2.0.117", features = ["full", "extra-traits"] }
+quote = "1.0.45"
+serde = { version = "1.0.228", default-features = false }
+serde_json = "1.0.149"
+# vello 0.10 研究分支（research/*）路径条目；velm 不依赖，仅保留以满足 re-root 后若某
+# vello crate 经 `workspace = true` 引用时的解析。
+vello = { version = "0.10.0", path = "vello/research/vello_research" }
+vello_encoding = { version = "0.10.0", path = "vello/research/vello_encoding" }
+vello_shaders = { version = "0.10.0", path = "vello/research/vello_shaders" }
 
 [profile.release]
 opt-level = 3

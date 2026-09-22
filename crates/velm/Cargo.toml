@@ -22,10 +22,23 @@ thiserror = "2"
 raw-ndk-sys = "0.1.2"
 android_logger = "0.15"
 crossbeam-channel = "0.5"
-# T2 spike（ADR-03：vello 0.10 / wgpu 29 / rwh 0.6 / pollster / peniko 0.6）
-wgpu = { version = "29", default-features = false, features = ["vulkan"] }
+# T16 迁移（vello 0.10 → vello_gpu 0.2 / wgpu 29 → 30 / rwh 0.6 / pollster / peniko 0.6）。
+# 注意：vello_gpu 的 wgpu 后端要求 wgpu 必须与它同源（同版本），故此处升到 30；
+# 仅开 vulkan（Android 唯一后端），wgsl/std 供 vello_gpu_shaders 的 WGSL 加载。
+wgpu = { version = "30", default-features = false, features = ["vulkan", "wgsl", "std"] }
 pollster = "0.4"
 raw-window-handle = "0.6"
-vello = { version = "0.10", default-features = false, features = ["wgpu"] }
+# 本地 vello_gpu 仓库（Sparse Strips 架构，Renderer/GpuRenderer 等新 API）。
+# 路径相对本 crate 清单（crates/velm/）解析：vello 仓库位于仓库根的 vello/ 下，
+# 故为 ../../vello/...；不开 wgpu_default（避免把 metal/dx12/gles 拉进 Android 构建），
+# 后端由上面的 wgpu 提供。
+vello_gpu = { path = "../../vello/vello_gpu", default-features = false, features = ["wgpu", "text"] }
+# vello_gpu 内部用 vello_common 的 peniko/kurbo/color，velm 渲染层与字体层直接复用同一份，
+# 保证 peniko::Color/AlphaColor<Srgb> 类型同一（set_paint 接收 AlphaColor<Srgb>）。
+vello_common = { path = "../../vello/vello_common", default-features = false, features = ["std"] }
+# 字形类型 `glifo::Glyph`：vello_gpu 的 `Scene::glyph_run().fill_glyphs()` 严格依赖它，
+# 而 vello_gpu/vello_common 均未公开再导出该类型，故 velm 直接依赖本地 glifo 仓库
+# （与 vello_gpu/vello_common 同源，peniko/vello_common 版本自然统一）。需 std（Android 可用）。
+glifo = { path = "../../vello/glifo", default-features = false, features = ["std"] }
 # T2 Slice 3 文本（ADR-06：skrifa 直绘，与 vello 内部同版本 0.44）
 skrifa = "0.44"

@@ -1,14 +1,15 @@
 //! render/font.rs — 系统字体加载、极简水平排版与字体缓存（ADR-06：skrifa 直绘）。
 //!
-//! vello 只提供 glyph run 编码（`Scene::draw_glyphs`），不含字体解析与排版；
-//! 本模块用 vello 已内置的 skrifa 0.44 完成 cmap（字符→glyph id）与水平
-//! advance 累加，产出 vello `Glyph`。不做 kerning / shaping / BiDi / 换行——
+//! vello_gpu 只提供 glyph run 编码（`Scene::glyph_run().fill_glyphs()`，来自 glifo），
+//! 不含字体解析与排版；
+//! 本模块用 skrifa 0.44 完成 cmap（字符→glyph id）与水平
+//! advance 累加，产出 glifo `Glyph`。不做 kerning / shaping / BiDi / 换行——
 //! P0 计数器仅需中英文单行（ADR-10），复杂排版留待后续评估 glifo/parley。
 //!
 //! 字体直接读 Android 系统字体（`/system/fonts`，对所有进程可读），不打包进
 //! APK：NotoSansCJK 约 32MB，打包会让 APK 膨胀，系统字体在 minSdk24 上稳定存在。
 //!
-//! 本模块依赖 skrifa/vello（android-only 依赖），故**只在 android 目标编译**；
+//! 本模块依赖 skrifa/vello_gpu（android-only 依赖），故**只在 android 目标编译**；
 //! 与字体无关的纯几何（基线居中）放在 `render::scene`，以便 host 单测。
 
 use std::sync::Arc;
@@ -16,8 +17,11 @@ use std::sync::Arc;
 use skrifa::instance::{LocationRef, Size};
 use skrifa::string::StringId;
 use skrifa::{FontRef, MetadataProvider};
-use vello::Glyph;
-use vello::peniko::{Blob, FontData};
+// T16 迁移：字形类型与字体字节容器改用 vello_common/glifo（与 vello_gpu 同源）。
+// - `Glyph` 来自 glifo（vello_gpu 的 `glyph_run().fill_glyphs()` 要求的精确类型）。
+// - `Blob`/`FontData` 来自 vello_common::peniko（与 vello_gpu 的 font 参数类型同一）。
+use glifo::Glyph;
+use vello_common::peniko::{Blob, FontData};
 
 /// Android 系统 Roboto（拉丁/数字），单字体 ttf，collection index 0。
 pub const ROBOTO_REGULAR: &str = "/system/fonts/Roboto-Regular.ttf";
@@ -28,7 +32,7 @@ pub const NOTO_SANS_CJK_SC: (&str, u32) = ("/system/fonts/NotoSansCJK-Regular.tt
 pub struct FontFace {
     bytes: Arc<Vec<u8>>,
     index: u32,
-    /// 传给 `Scene::draw_glyphs` 的字体数据（与 `bytes` 共享同一分配）。
+    /// 传给 `Scene::glyph_run` 的字体数据（与 `bytes` 共享同一分配）。
     pub data: FontData,
     /// name 表 family name（诊断用，加载日志之外保留以便后续排版调试）。
     #[allow(dead_code)]
@@ -58,8 +62,8 @@ impl FontFace {
         })
     }
 
-    /// 逐字符 cmap + 水平 advance，布局成一行 vello glyph（y=0，x 为相对
-    /// run 原点的像素偏移；run 的基线位置由 `draw_glyphs().transform()` 给）。
+    /// 逐字符 cmap + 水平 advance，布局成一行 glifo glyph（y=0，x 为相对
+    /// run 原点的像素偏移；run 的基线位置由 `glyph_run().set_transform()` 给）。
     /// 返回 `(glyphs, 行宽 px)`。字体缺失的字符被跳过（调用方应先用
     /// `contains` 做字体回退分段）。
     pub fn shape(&self, text: &str, px: f32) -> (Vec<Glyph>, f32) {
