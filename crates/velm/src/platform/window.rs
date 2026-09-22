@@ -56,6 +56,23 @@ impl NativeWindowWrapper {
         Some(Self { ptr, owned: true })
     }
 
+    /// 接手一个**已被调用方 acquire** 的窗口引用：本包装不再 acquire，Drop 时
+    /// release 一次。
+    ///
+    /// 用于「主线程回调 acquire → 移交引擎线程」的所有权转移（§3.3）：引擎线程
+    /// 处理 `WindowCreated` 时**不得**用 [`Self::from_ndk`]，否则会 acquire 第
+    /// 二次，引用计数永不归零、窗口泄漏。
+    ///
+    /// # Safety
+    /// - `ptr` 必须非空且指向有效的 `ANativeWindow`；
+    /// - 调用方必须已为该指针 acquire 一次引用，并把「release 一次」的责任移交
+    ///   本包装；此后调用方不得再 release 该引用。
+    pub unsafe fn from_ndk_owned(ptr: *mut ANativeWindow) -> Option<Self> {
+        let ptr = NonNull::new(ptr)?;
+        log::info!("[platform] 接手已 acquire 的窗口引用: {ptr:p}");
+        Some(Self { ptr, owned: true })
+    }
+
     /// 原始指针（仅供 NDK 调用与日志；不得据此延长生命周期）。
     pub fn as_raw_ptr(&self) -> *mut ANativeWindow {
         self.ptr.as_ptr()
@@ -91,12 +108,7 @@ impl NativeWindowWrapper {
         // SAFETY: 包装存活期间窗口有效；setBuffersGeometry 只修改缓冲几何，
         // 不转移所有权，失败时窗口状态不变。
         let rc = unsafe {
-            ANativeWindow_setBuffersGeometry(
-                self.ptr.as_ptr(),
-                width,
-                height,
-                FORMAT_RGBA_8888,
-            )
+            ANativeWindow_setBuffersGeometry(self.ptr.as_ptr(), width, height, FORMAT_RGBA_8888)
         };
         if rc < 0 {
             log::error!(

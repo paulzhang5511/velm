@@ -982,6 +982,7 @@ dependencies = [
  "raw-ndk-sys",
  "raw-window-handle",
  "skrifa",
+ "thiserror",
  "vello",
  "wgpu",
 ]

@@ -239,7 +239,7 @@ T1 workspace 骨架 + 空 cdylib 装机
 **Description:** 按 SPEC §7.1、ADR-11/12 实现 `NativeWindowWrapper`：`from_ndk`（acquire）、`Drop`（release）、`configure_buffers`（RGBA_8888，失败返回错误码不 panic）、size/format、rwh 0.6 `HasWindowHandle/HasDisplayHandle`；density 经 AConfiguration 获取并封装为 `ScreenConfig { density, w, h }`。
 **Acceptance criteria:**
 - [x] android 构建通过（`clippy -D warnings` + `cargo build --workspace` 双 target）；真机日志打印正确宽高/density；重复 acquire/release 平衡（日志/压测无窗口泄漏报错）——**真机两项待 T13**
-- [ ] rwh 0.6 句柄能被 T10 的 wgpu 接受
+- [x] rwh 0.6 句柄能被 T10 的 wgpu 接受（T10 接线闭合：`VelloRenderer::new` 用 `window.window_handle()/display_handle()` 的 raw 句柄调 `create_surface_unsafe`）
 **Verification:** `cargo clippy -p velm --target aarch64-linux-android -- -D warnings`；真机 logcat
 **Dependencies:** T3
 **Files:** `crates/velm/src/platform/{mod.rs,window.rs}`（density 若超过 2 文件上限放 window.rs 内）
@@ -251,18 +251,31 @@ T1 workspace 骨架 + 空 cdylib 装机
 >
 > **所有权语义（已回写 SPEC §7.1）**：`from_ndk` 自 acquire、`Drop` 自 release，`owned` 标志记录状态；**T12 重写回调时必须移除 T3 spike 在 `native_window_created` 里的那次 acquire**，否则引用计数不平衡、窗口永不释放。包装类型不实现 `Send`/`Sync`，窗口只在引擎线程构造与释放。
 >
-> **待验证**：`from_ndk`/`configure_buffers`/rwh 句柄只能在设备侧验证；rwh 句柄能否被 T10 的 wgpu 接受将在 T10 建 surface 时确认。
+> **待验证**：`from_ndk`/`from_ndk_owned`/`configure_buffers` 的实际行为只能在设备侧验证（T13）。rwh 句柄已在 T10 接入 wgpu，编译期契约成立、运行时行为待真机。
 
 ### Task 10: render/vello_renderer
 
 **Description:** 按 SPEC §7.8 与 T2 结论实现 `VelloRenderer::new(window,w,h)?`、`resize`、`render(root: &View<Msg>)`：wgpu 29 surface/device（Fifo 呈现、surface 能力自适应格式）、vello 0.10 编码（#121212 清屏、`Background` 圆角矩形、TextView 文本按 text_size/color/computed_rect、中英文字体 fallback）、present 与 OUTDATED/LOST 恢复；`velm::Error`（thiserror）落地。
 **Acceptance criteria:**
-- [ ] 给定一棵硬编码已布局 View 树，真机渲染出与 rect 一致的文本布局
-- [ ] resize/重建 surface 后恢复；surface lost 自动重配不崩
-**Verification:** 设备截图；旋转/后台恢复验证
+- [x] 绘制指令生成有 host 单测：顺序（画家算法）、sp→px、零面积/空文本跳过、与 `measure_and_layout` 串联的坐标一致、基线居中
+- [ ] 给定一棵硬编码已布局 View 树，真机渲染出与 rect 一致的文本布局（T13 设备验证）
+- [ ] resize/重建 surface 后恢复；surface lost 自动重配不崩（T13 设备验证）
+**Verification:** `cargo test -p velm render`；设备截图；旋转/后台恢复验证
 **Dependencies:** T2、T9（View 类型可先用最小本地定义，后接 T4）
-**Files:** `crates/velm/src/render/{mod.rs,vello_renderer.rs}`、`crates/velm/src/error.rs`、`crates/velm/src/render/font.rs`
-**Estimated scope:** M（4 文件）
+**Files:** `crates/velm/src/render/{mod.rs,scene.rs,vello_renderer.rs,font.rs}`、`crates/velm/src/error.rs`
+**Estimated scope:** M（5 文件）
+
+> **实施记录（2026-09-22，T10 完成）**：
+>
+> - **渲染拆成两层**：`render::scene`（host 可见，纯逻辑：视图树 → `DrawCommand` 序列）+ `render::vello_renderer` / `render::font`（android-only）。这样「画什么」在 host 可单测，符合 §10.2；`render/mod.rs` 与 `engine/mod.rs` 同样做「按目标 gate 子模块」而非整块 cfg。
+> - **`render/text.rs` 更名为 `render/font.rs`** 并加 `FontCache`（roboto + noto_sc、`shape_line`、`vertical_metrics`），与 PLAN 的文件清单对齐；垂直度量的符号归一（`descent` 取绝对值）放在 `FontFace::vertical_metrics`，纯几何 `centered_baseline` 放 `scene` 以便 host 测。
+> - **`velm::Error` 落地**（thiserror 2）：只覆盖初始化路径 8 个变体；每帧绘制失败一律记日志跳过，不进控制流。
+> - **偏离规格 1**：`VelloRenderer::new` 增加 `density` 参数（sp→px 需要，引擎持有 `ScreenConfig.density`）。**偏离规格 2**：`new` 内部先调 `window.configure_buffers`（RGBA_8888），缓冲几何是建 surface 的前置条件。均已回写 SPEC §7.8。
+> - **T9 遗留验收项闭合**：rwh 0.6 句柄由 `NativeWindowWrapper` 导出后交给 `wgpu::create_surface_unsafe`（唯一接线点在 `new`）。
+> - **顺带修掉 T9 标记的引用计数隐患**：新增 `NativeWindowWrapper::from_ndk_owned`（接手回调已 acquire 的引用，不再 acquire），引擎线程改为持有 `Option<NativeWindowWrapper>`，删除裸指针与 `release_window`；回调侧 acquire 保留（回调返回后框架可能回收其引用）。
+> - **删除 T2 spike 的 `render_frame()` 探针帧**：首帧改由 T11 用 Activity 的真实视图树产出（T2 实证「不提交首帧则触摸不投递」，但探针帧是临时软件帧，不应带进正式渲染器）。
+> - **实测坑**：wgpu 29 的 `request_adapter` 返回 `Result`（不是 `Option`，与 T2 spike 的 `.ok()?` 不同）；`CurrentSurfaceTexture` 无 `OutOfMemory` 变体，实际是 `Success/Suboptimal/Timeout/Occluded/Outdated/Lost/Validation`——规格里写的 `SurfaceError::OutOfMemory` 已按实际枚举改写成 §7.8 第 6 条。
+> - 门禁：host/aarch64/x86_64 三目标 clippy `-D warnings` 全绿、android 双 target `cargo build --workspace` 通过、fmt 干净；host 单测 96（新增 9）。设备侧渲染/resize/surface-lost 行为待 T13 验证。
 
 ### Task 11: 静态画面接线（两泳道汇合）
 

@@ -11,14 +11,14 @@
 //! - `event`：MotionEvent 与触摸动作映射（T5）
 //! - `engine`：NativeActivity 回调、引擎线程、命中测试（T3/T7/T8/T12）
 //! - `platform`：ANativeWindow 封装与 raw-window-handle（T9）
-//! - `render`：vello/wgpu 渲染器（T2/T10）
+//! - `render`：绘制指令与 vello/wgpu 渲染器（T2/T10）
+//! - `error`：框架统一错误类型（ADR-11）
 
 pub mod app;
 pub mod engine;
+pub mod error;
 pub mod event;
 pub mod layout;
 pub mod platform;
-pub mod view;
-
-#[cfg(target_os = "android")]
 pub mod render;
+pub mod view;

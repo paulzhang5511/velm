@@ -30,6 +30,8 @@ use raw_ndk_sys::{
     ANativeWindow_getWidth, ANativeWindow_release,
 };
 
+use crate::platform::window::NativeWindowWrapper;
+
 /// 日志 tag（logcat `-s VelmEngine`）。
 const LOG_TAG: &str = "VelmEngine";
 /// attachLooper 的 looper ident；pollOnce 返回该值表示输入队列有事件。
@@ -162,7 +164,7 @@ fn engine_main(rx: Receiver<EngineMsg>, looper_slot: Arc<AtomicPtr<ALooper>>) {
         log::info!("引擎线程 Looper 就绪");
 
         let mut queue: *mut AInputQueue = ptr::null_mut();
-        let mut window: *mut ANativeWindow = ptr::null_mut();
+        let mut window: Option<NativeWindowWrapper> = None;
         let mut renderer: Option<crate::render::VelloRenderer> = None;
 
         'outer: loop {
@@ -187,30 +189,45 @@ fn engine_main(rx: Receiver<EngineMsg>, looper_slot: Arc<AtomicPtr<ALooper>>) {
                         height,
                         density,
                     } => {
-                        if !window.is_null() && window != w {
+                        if window.is_some() {
                             log::warn!("新窗口创建时旧窗口仍持有，先释放渲染器与引用");
                             renderer.take();
-                            release_window(&mut window);
+                            window = None;
                         }
-                        window = w;
                         log::info!("引擎获得窗口 {w:p}：{width}x{height} density={density:.2}");
+                        // 接手回调中已 acquire 的引用（不二次 acquire）。
+                        let Some(owned) = (unsafe { NativeWindowWrapper::from_ndk_owned(w) })
+                        else {
+                            log::error!("窗口指针为空，跳过渲染器创建");
+                            continue;
+                        };
+                        window = Some(owned);
                         match crate::render::VelloRenderer::new(
-                            w,
+                            // 刚赋值，必然为 Some。
+                            window.as_ref().expect("窗口刚写入"),
                             width.max(0) as u32,
                             height.max(0) as u32,
+                            density,
                         ) {
-                            Some(mut gpu) => {
-                                gpu.render_frame();
+                            Ok(gpu) => {
+                                log::info!("vello 渲染器已就绪");
                                 renderer = Some(gpu);
+                                // T11 在这里渲染首帧（on_draw → measure → render）：
+                                // T2 实证「不提交首帧则触摸不投递」，故首帧必须由
+                                // Activity 的真实视图树产出，不再是 spike 的探针帧。
                             }
-                            None => log::error!("vello 渲染器初始化失败（T2 spike）"),
+                            Err(e) => log::error!("vello 渲染器初始化失败: {e}"),
                         }
                     }
                     EngineMsg::WindowDestroyed(NdkPtr(w), ack) => {
-                        if window == w {
-                            // 先 drop 渲染器（停止 present、释放 surface），再 release 窗口。
+                        let matches = window
+                            .as_ref()
+                            .map(|held| held.as_raw_ptr() == w)
+                            .unwrap_or(false);
+                        if matches {
+                            // 先 drop 渲染器（停止 present、释放 surface），再释放窗口。
                             renderer.take();
-                            release_window(&mut window);
+                            window = None;
                         } else {
                             log::warn!("WindowDestroyed 与当前持有窗口不一致");
                         }
@@ -229,9 +246,8 @@ fn engine_main(rx: Receiver<EngineMsg>, looper_slot: Arc<AtomicPtr<ALooper>>) {
                         if !queue.is_null() {
                             detach_queue(&mut queue);
                         }
-                        if !window.is_null() {
-                            release_window(&mut window);
-                        }
+                        // 显式先释放窗口引用（包装的 Drop 会 release），再退出循环。
+                        drop(window.take());
                         break 'outer;
                     }
                 }
@@ -286,19 +302,6 @@ fn detach_queue(slot: &mut *mut AInputQueue) {
     unsafe { AInputQueue_detachLooper(queue) };
     *slot = ptr::null_mut();
     log::info!("InputQueue 已 detach: {queue:p}");
-}
-
-/// 释放引擎线程持有的窗口引用（与主线程 `ANativeWindow_acquire` 平衡）。
-fn release_window(slot: &mut *mut ANativeWindow) {
-    let window = *slot;
-    if window.is_null() {
-        return;
-    }
-    // SAFETY: 主线程在 created 回调中 acquire 一次并移交所有权；
-    // 销毁同步 ack 保证 release 前本线程是唯一使用者。
-    unsafe { ANativeWindow_release(window) };
-    *slot = ptr::null_mut();
-    log::info!("引擎已 release 窗口: {window:p}");
 }
 
 /// 取出并处理队列中当前所有待处理输入事件（spike：日志 + finish）。

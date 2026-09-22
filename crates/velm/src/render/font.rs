@@ -1,4 +1,4 @@
-//! 系统字体加载与极简水平排版（T2 Slice 3，ADR-06：skrifa 直绘）。
+//! render/font.rs — 系统字体加载、极简水平排版与字体缓存（ADR-06：skrifa 直绘）。
 //!
 //! vello 只提供 glyph run 编码（`Scene::draw_glyphs`），不含字体解析与排版；
 //! 本模块用 vello 已内置的 skrifa 0.44 完成 cmap（字符→glyph id）与水平
@@ -7,6 +7,9 @@
 //!
 //! 字体直接读 Android 系统字体（`/system/fonts`，对所有进程可读），不打包进
 //! APK：NotoSansCJK 约 32MB，打包会让 APK 膨胀，系统字体在 minSdk24 上稳定存在。
+//!
+//! 本模块依赖 skrifa/vello（android-only 依赖），故**只在 android 目标编译**；
+//! 与字体无关的纯几何（基线居中）放在 `render::scene`，以便 host 单测。
 
 use std::sync::Arc;
 
@@ -90,7 +93,24 @@ impl FontFace {
             .and_then(|font| font.charmap().map(ch))
             .is_some()
     }
+
+    /// 垂直度量 `(ascent, descent)`，单位像素，均返回**正值**（基线上方 / 下方）。
+    ///
+    /// skrifa 的 `Metrics::descent` 为负值，这里取绝对值归一，供
+    /// `scene::centered_baseline` 使用。
+    pub fn vertical_metrics(&self, px: f32) -> Option<(f32, f32)> {
+        let font = FontRef::from_index(&self.bytes, self.index).ok()?;
+        let metrics = font.metrics(Size::new(px), LocationRef::default());
+        Some((metrics.ascent, metrics.descent.abs()))
+    }
 }
+
+/// 字体缺失时的经验垂直度量比例（ascent 0.8em / descent 0.2em）。
+///
+/// 只影响文字的垂直居中位置，不会导致缺字——缺字是 `shape_line` 返回空 run
+/// 的结果，两者独立。
+const FALLBACK_ASCENT_RATIO: f32 = 0.8;
+const FALLBACK_DESCENT_RATIO: f32 = 0.2;
 
 /// 一行中属于同一字体的连续 glyph 段（字体回退的产物）。
 pub struct GlyphRun<'a> {
@@ -99,9 +119,52 @@ pub struct GlyphRun<'a> {
     pub glyphs: Vec<Glyph>,
 }
 
-/// 把一行文本按字体覆盖范围切成多个 run：`primary` 含有的字符用 primary，
-/// 否则尝试 `fallback`，两者都不含的字符跳过。每段 glyph 的 x 累加为整行
-/// 坐标，绘制时所有 run 共用同一个行原点 transform。
+/// 字体缓存：进程内只加载一次，渲染器持有。
+pub struct FontCache {
+    /// Roboto（拉丁/数字）；加载失败则该类字符不出字。
+    pub roboto: Option<FontFace>,
+    /// Noto Sans CJK SC（中文回退，ttc index 2）。
+    pub noto_sc: Option<FontFace>,
+}
+
+impl FontCache {
+    /// 加载系统字体；任一字体失败只告警，不阻断图形渲染（ADR-11）。
+    pub fn load() -> Self {
+        let roboto = FontFace::load(ROBOTO_REGULAR, 0);
+        if roboto.is_none() {
+            log::warn!("Roboto 加载失败，拉丁文本不可用");
+        }
+        let (path, index) = NOTO_SANS_CJK_SC;
+        let noto_sc = FontFace::load(path, index);
+        if noto_sc.is_none() {
+            log::warn!("NotoSansCJK 加载失败，中文文本不可用");
+        }
+        Self { roboto, noto_sc }
+    }
+
+    /// 把一行文本按字体覆盖范围切成多个 run：`primary` 含有的字符用 primary，
+    /// 否则尝试 `fallback`，两者都不含的字符跳过。每段 glyph 的 x 累加为整行
+    /// 坐标，绘制时所有 run 共用同一个行原点 transform。
+    pub fn shape_line(&self, text: &str, px: f32) -> Vec<GlyphRun<'_>> {
+        let Some(primary) = self.roboto.as_ref() else {
+            return Vec::new();
+        };
+        shape_runs(text, px, primary, self.noto_sc.as_ref())
+    }
+
+    /// 当前字体的垂直度量 `(ascent, descent)`（均正值，像素）。
+    ///
+    /// 字体缺失时退回经验比例，保证文本仍有合理的垂直居中位置。
+    pub fn vertical_metrics(&self, px: f32) -> (f32, f32) {
+        self.roboto
+            .as_ref()
+            .or(self.noto_sc.as_ref())
+            .and_then(|face| face.vertical_metrics(px))
+            .unwrap_or((px * FALLBACK_ASCENT_RATIO, px * FALLBACK_DESCENT_RATIO))
+    }
+}
+
+/// 按字体覆盖范围把一行文本切成多个连续 run（详见 [`FontCache::shape_line`]）。
 pub fn shape_runs<'a>(
     text: &str,
     px: f32,

@@ -15,6 +15,8 @@ log = "0.4"
 # peniko 为纯 Rust（#![no_std]），host/android 均可编译：view/layout/hit_test
 # 需要使用 peniko::Color 而不引入任何 android 符号（SPEC §10.2）。
 peniko = "0.6"
+# ADR-11：统一错误类型；纯 Rust，host/android 均可编译。
+thiserror = "2"
 
 [target.'cfg(target_os = "android")'.dependencies]
 raw-ndk-sys = "0.1.2"

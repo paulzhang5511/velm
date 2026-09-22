@@ -70,7 +70,8 @@ fn intent_none_is_constructible_and_copyable() {
     assert_eq!(format!("{copied:?}"), "Intent::none()");
     assert_eq!(format!("{:?}", Intent::<Msg>::default()), "Intent::none()");
     // 显式走一遍 Clone（Copy 语义下 `let copied = intent` 不触发 clone 实现）。
-    let cloned = intent.clone();
+    // 用 UFCS 而非 `intent.clone()`：后者会触发 clippy::clone_on_copy。
+    let cloned = Clone::clone(&intent);
     assert_eq!(format!("{cloned:?}"), "Intent::none()");
 }
 

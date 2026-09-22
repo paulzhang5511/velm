@@ -795,7 +795,9 @@ impl HasDisplayHandle for NativeWindowWrapper { /\* AndroidDisplayHandle \*/ }
 
 **T9 定稿补充：**
 
-* **所有权**（T9 定稿）：`from_ndk` 自己 `ANativeWindow_acquire`、`Drop` 里 `ANativeWindow_release`，两者配对；结构体内的 `owned` 标志记录是否持有该引用（SPEC 原注释「owned/acquired 状态明确」的落地）。**因此回调侧不得再 acquire**——T3 spike 的 `native_window_created` 目前仍自己 acquire 一次，T12 重写回调时必须移除，否则引用计数不平衡、窗口永不释放。
+* **所有权**（T9 定稿，T10 修订）：`from_ndk` 自己 `ANativeWindow_acquire`、`Drop` 里 `ANativeWindow_release`，两者配对；结构体内的 `owned` 标志记录是否持有该引用（SPEC 原注释「owned/acquired 状态明确」的落地）。
+
+  **T10 修订**：回调侧仍需 acquire（回调返回后框架可能回收其引用，引擎线程要自持一份），因此新增 `from_ndk_owned(ptr)`——**接手一个已被调用方 acquire 的引用**（不再 acquire，Drop 时 release 一次）。引擎线程处理 `WindowCreated` 时**必须**用 `from_ndk_owned` 而非 `from_ndk`，否则引用计数被加两次、窗口永不释放（T9 曾标记该风险，现已在 T10 接线时闭合：引擎线程改为持有 `Option<NativeWindowWrapper>`，删除原先的裸指针 + `release_window`）。
 
 * 包装类型**不实现 `Send`/`Sync`**：窗口只在引擎线程构造、使用与释放；跨线程只传裸指针（由 `activity_thread` 负责）。
 
@@ -1178,37 +1180,39 @@ loop {
 
 4. 资源生命周期：surface/device 在窗口销毁时显式销毁并与回调线程同步（§3.3）；重建窗口时重新创建渲染器。
 
-**接口形状（职责级；具体 vello 0.10 类型 / 方法名以 T2 spike 实测为准）：**
+**接口形状（T10 定稿）：**
 
+```rust
+// render::scene —— 纯逻辑层，host 可编译可测（§10.2）
+pub enum DrawCommand {
+    FillRect { rect: Rect, color: Color, corner_radius: f32 },
+    Text { rect: Rect, text: String, size_px: f32, color: Color },
+}
+pub fn build_draw_list<Msg>(root: &View<Msg>, density: f32) -> Vec<DrawCommand>;
+pub fn sp_to_px(sp: f32, density: f32) -> f32;
+pub fn centered_baseline(height: f32, ascent: f32, descent: f32) -> f32;
 
-
-```
-pub struct VelloRenderer { /\* wgpu device/queue/surface, vello renderer/编码缓存, 字体缓存 \*/ }
+// render::vello_renderer —— android-only
+pub struct VelloRenderer { /* wgpu device/queue/surface, vello renderer, 中间纹理, 字体缓存, density, 上一帧指令 */ }
 
 impl VelloRenderer {
-
-&#x20;   pub fn new(window: \&NativeWindowWrapper, w: u32, h: u32) -> Result\<Self, velm::Error>;
-
-&#x20;   pub fn resize(\&mut self, w: u32, h: u32);
-
-&#x20;   pub fn render\<Msg>(\&mut self, root: \&View\<Msg>);   // 失败记日志/重配 surface，不 panic
-
+    pub fn new(window: &NativeWindowWrapper, w: u32, h: u32, density: f32) -> Result<Self, velm::Error>;
+    pub fn resize(&mut self, w: u32, h: u32);
+    pub fn render<Msg>(&mut self, root: &View<Msg>);   // 失败记日志/重配 surface，不 panic
 }
 ```
 
-> 错误类型为 
->
-> `velm::Error`
->
-> （ADR-11，thiserror）；
->
-> `SurfaceError::Outdated/Lost`
->
->  时重配重试，
->
-> `OutOfMemory/Outdated`
->
->  不可恢复时停引擎并上报。
+**T10 定稿的决策（对原始规格的澄清与偏离）：**
+
+1. **`new` 增加 `density` 参数**（偏离原三参数签名）：sp→px 换算需要密度，而引擎持有 `ScreenConfig.density`（`WindowResized` 回调不带密度，见 §7.7），构造时确定最简洁。
+2. **`new` 内部先调 `window.configure_buffers(w, h)`**（RGBA_8888）：缓冲几何是 surface 建立的前置条件；失败返回 `Error::BufferGeometry(负错误码)`，不 panic。
+3. **绘制顺序（画家算法）**：节点自身背景先于其文本、也先于其子节点；子节点按添加顺序产出（后添加者画在上层，与 hit-test 的逆序探测对称）。
+4. **零面积子树整体跳过**：`width <= 0 || height <= 0` 的节点及其子树不产出指令——子节点受父容器约束必然不可见，且避免给 kurbo 造成退化形状。
+5. **文本左对齐、垂直居中于 `computed_rect`**：基线由 `centered_baseline(height, ascent, descent)` 计算，`ascent/descent` 取正值（skrifa 的 `descent` 为负，由 `FontCache::vertical_metrics` 取绝对值归一）；字体缺失时退回 0.8em / 0.2em 经验比例。
+6. **surface 错误处理**：`Outdated` → 重配后重试一次；`Lost` → 记 error 并丢弃本帧，等窗口重建（T12 的窗口重建路径）；`Timeout` / `Occluded` → 跳过本帧。任何失败都只告警，不 panic（ADR-11）。
+7. **`resize` 用上一帧指令重画**：重配 swapchain 后到下一帧之间会露出未定义内容，故缓存 `last_frame` 并立即重绘。
+
+> **错误类型 `velm::Error`**（ADR-11，thiserror，见 `crates/velm/src/error.rs`）：只覆盖**初始化路径**（窗口尺寸、缓冲几何、句柄、surface、适配器、设备、surface 配置、vello 初始化）；每帧的绘制失败一律记日志跳过，不进入控制流。
 
 ### 7.9 框架 `lib.rs` 与 demo（ADR-07）
 
