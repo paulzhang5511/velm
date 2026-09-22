@@ -172,11 +172,19 @@ T1 workspace 骨架 + 空 cdylib 装机
 **Description:** 按 SPEC §7.4 + ADR-12 实现 `measure_and_layout(root, w_px, h_px, density)`：Dp/sp 乘 density；margin 四向生效；TextView WrapContent 用文本度量（spike 文本方案提供 advance；未接入前用规格近似并隔离为可替换函数）；ViewGroup WrapContent 按子节点与 margin 求和（修正 docs 缺陷）；输出绝对像素坐标。
 
 **Acceptance criteria:**
-- [ ] 单测覆盖：MatchParent/Dp/WrapContent、纵/横排列、margin 偏移、density=2 时 Dp 翻倍、根容器铺满、clamp 不溢出
+- [x] 单测覆盖：MatchParent/Dp/WrapContent、纵/横排列、margin 偏移、density=2 时 Dp 翻倍、根容器铺满、clamp 不溢出
 **Verification:** `cargo test -p velm layout`
 **Dependencies:** T4（T2 文本度量结论可后补，先用可替换 trait/函数隔离）
 **Files:** `crates/velm/src/layout/{mod.rs,measure.rs}`、`crates/velm/tests/layout.rs`
 **Estimated scope:** S（3 文件）
+
+> **实施记录（2026-09-22，T6 完成）**：新增 `crates/velm/src/layout/{mod,measure}.rs` + `crates/velm/tests/layout.rs`；`lib.rs` 无条件 `pub mod layout`。**16 个 host 单测全绿**（累计 37 = T4 13 + T5 8 + T6 16）。docs 的**两个缺陷均已修正并有回归单测**：① 容器 WrapContent 由子节点「主轴求和 / 交叉轴取最大」得到（回归用例 `view_group_wrap_content_is_not_match_parent`）；② margin 四向生效，既偏移位置也扣减可用尺寸（回归用例 `margin_reduces_match_parent_size` / `sibling_margins_separate_children`）。
+>
+> **算法**：两遍 O(n)——`measure` 求尺寸（容器 WrapContent 依赖子节点，必须先于定位）、`place` 写绝对坐标；每遍各遍历一次全树，不做重复递归。**文本度量隔离为 `pub fn estimate_text_width(text, text_size_px)`**，P1 换 skrifa 真实 advance 时只改这一个函数。
+>
+> **两处规格补充（已回写 SPEC §7.4）**：① 根节点的可用区 = 整窗尺寸扣除根自身 margin（否则 MatchParent 根节点带 margin 会溢出屏幕）；② 明确 v1 限制：WrapContent 容器内的 MatchParent 子节点按上界一次求值，不实现 Android 的二次 measure。
+>
+> 门禁：host + aarch64 + x86_64 三目标 clippy `-D warnings` 全绿，`cargo fmt --check` 干净。
 
 ### Task 7: hit_test DFS
 

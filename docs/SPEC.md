@@ -918,9 +918,17 @@ impl MotionEvent {
 /// 入口：以屏幕物理像素宽高为根约束，递归写满每个节点的 computed\_rect。
 
 pub fn measure\_and\_layout\<Msg>(root: \&mut View\<Msg>, width\_px: f32, height\_px: f32, density: f32);
+
+/// v1 文本宽度估算（可替换点）：P1 接入 skrifa 真实 advance 时只换本函数。
+
+pub fn estimate\_text\_width(text: \&str, text\_size\_px: f32) -> f32;
 ```
 
 算法契约（在【ARCH §4.3】手写算法基础上修正）：
+
+0. **两遍 O(n) 算法**（T6 定稿）：第一遍 `measure` 自顶向下求宽高写入 `computed_rect`（x/y 置 0），第二遍 `place` 自顶向下写绝对坐标。容器 WrapContent 需要先拿到子节点尺寸，故求尺寸必须先于定位；两遍各遍历一次全树，不做重复递归。
+
+1. 根节点原点 (0,0)，约束为整窗尺寸。**T6 定稿**：根节点沿用与子节点相同的规则——可用区 = 整窗尺寸扣除根节点自身四向 margin（margin 为 0 时即原点 (0,0)、约束为整窗）；否则 MatchParent 根节点会溢出屏幕。
 
 
 
@@ -943,6 +951,10 @@ pub fn measure\_and\_layout\<Msg>(root: \&mut View\<Msg>, width\_px: f32, height
 2. Dp/sp→px 统一乘 `density`（ADR-12：`AConfiguration_fromAssetManager` + `AConfiguration_getDensity`，dpi/160.0；符号在 T3 spike 核对）；拿不到时兜底 1.0 并打一次 warn。
 
 3. 输出坐标为物理像素、绝对坐标，与 `MotionEvent.x/y`（NDK 返回的是像素坐标）同一坐标系 —— 这是 hit-test 正确性的前提。
+
+4. **尺寸非负**（T6 定稿）：任一节点的可用区被 margin 吃光时（`avail - margin < 0`）尺寸退化为 0，不产生负宽高；文本估算宽 clamp 到父内容宽，Dp / MatchParent 不再二次 clamp（显式尺寸按显式处理）。
+
+5. **容器 WrapContent 内部的 MatchParent 子节点**（T6 定稿的 v1 限制）：以求值时父节点的可用区（上界）为准，不再做第二遍重排——即 Android 的「measure 两次」语义在 v1 不实现，需在代码与本规格注明。
 
 ### 7.5 `engine::hit_test` — 命中测试
 

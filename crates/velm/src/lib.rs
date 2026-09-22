@@ -14,6 +14,7 @@
 //! - `render`：vello/wgpu 渲染器（T2/T10）
 
 pub mod event;
+pub mod layout;
 pub mod view;
 
 #[cfg(target_os = "android")]
