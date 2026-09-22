@@ -1,24 +1,25 @@
-//! NativeActivity 入口、C 回调绑定与引擎线程（T3 spike 版）。
+//! NativeActivity 入口、C 回调绑定与引擎线程。
 //!
 //! 事件模型（SPEC §3.3 / ADR-09）：
-//! - 主线程（UI）的 C 回调只做登记与 channel 发布，绝不阻塞渲染或轮询；
+//! - 主线程（UI）的 C 回调只做 acquire / 登记 / channel 发布，绝不阻塞渲染
+//!   或轮询（唯一的例外是销毁路径的**同步 ack**：窗口 / 队列销毁回调必须阻塞
+//!   到引擎线程停止使用该资源后才返回，否则 NDK 会 use-after-free）；
 //! - 引擎线程持有自己的 [`ALooper`]，输入队列只在该线程 attach/detach；
-//! - 队列销毁走同步 ack：主线程回调阻塞到引擎线程完成 detach 才返回；
-//! - onDestroy 发 Quit 并 join 引擎线程。
+//! - onDestroy 发 Quit、join 引擎线程并回收上下文。
 //!
-//! T11：实现 Activity 的应用在此接入——`run_native_activity::<A>()` 创建
-//! Activity 运行时并把它移入引擎线程；窗口就绪后走
-//! `on_draw → measure_and_layout → render` 出帧。
+//! T12：引擎主循环改为由 §3.4 状态机驱动——控制消息先翻译成
+//! [`EngineEvent`]、交给 [`step`] 得到 [`EngineAction`]，再由循环执行动作。
+//! 「窗口与队列到达顺序任意」「无窗口丢弃重绘」「Quit 后不再出帧」等不变量
+//! 全部由状态机与其单测保证，本文件只做翻译与执行。
 //!
-//! 本文件仍是 T3 spike 的骨架：C 回调与 Looper 循环尚未改写为 §3.4 状态机
-//! （T12），输入事件仍只记录日志（T13 接入 hit-test 与消息分发）。
+//! 输入事件仍只记录日志（T13 接入 hit-test 与消息分发）。
 
 use std::ffi::c_void;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicPtr, Ordering};
-use std::thread::{self, JoinHandle};
+use std::sync::atomic::AtomicPtr;
+use std::thread;
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use raw_ndk_sys::{
@@ -27,7 +28,7 @@ use raw_ndk_sys::{
     AINPUT_EVENT_TYPE_KEY, AINPUT_EVENT_TYPE_MOTION, AInputEvent_getType, AInputQueue,
     AInputQueue_attachLooper, AInputQueue_detachLooper, AInputQueue_finishEvent,
     AInputQueue_getEvent, AInputQueue_preDispatchEvent, AKeyEvent_getKeyCode, ALOOPER_POLL_ERROR,
-    ALOOPER_PREPARE_ALLOW_NON_CALLBACKS, ALooper, ALooper_pollOnce, ALooper_prepare, ALooper_wake,
+    ALOOPER_PREPARE_ALLOW_NON_CALLBACKS, ALooper, ALooper_pollOnce, ALooper_prepare,
     AMotionEvent_getAction, AMotionEvent_getX, AMotionEvent_getY, ANativeActivity,
     ANativeActivityCallbacks, ANativeWindow, ANativeWindow_acquire, ANativeWindow_getHeight,
     ANativeWindow_getWidth, ANativeWindow_release,
@@ -35,9 +36,11 @@ use raw_ndk_sys::{
 
 use crate::app::Activity;
 use crate::app::state::ActivityRuntime;
-use crate::engine::events::Viewport;
+use crate::engine::app_context::{AppContext, EngineMsg, NdkPtr, null_looper_slot};
+use crate::engine::events::{EngineAction, EngineEvent, EngineState, Viewport, step};
 use crate::layout::measure_and_layout;
 use crate::platform::window::NativeWindowWrapper;
+use crate::render::VelloRenderer;
 use crate::view::View;
 
 /// 日志 tag（logcat `-s VelmEngine`）。
@@ -47,41 +50,31 @@ const INPUT_QUEUE_IDENT: i32 = 1;
 /// pollOnce 超时兜底（毫秒，ADR-09）。
 const POLL_TIMEOUT_MS: i32 = 16;
 
-/// 包装 NDK 裸指针以跨线程传递（裸指针默认非 `Send`）。
-struct NdkPtr<T>(*mut T);
-
-// SAFETY: NDK 保证 `AInputQueue` 在 `onInputQueueDestroyed` 回调返回前有效；
-// 该队列只在引擎线程被 attach/访问，销毁经 detach + 同步 ack，不存在并发访问。
-unsafe impl<T> Send for NdkPtr<T> {}
-
-/// 主线程 → 引擎线程的控制消息。
-enum EngineMsg {
-    InputQueueCreated(NdkPtr<AInputQueue>),
-    /// 第二参数为一次性 ack 通道：引擎完成 detach 后回执，主线程才放行。
-    InputQueueDestroyed(NdkPtr<AInputQueue>, Sender<()>),
-    /// 窗口所有权随消息移交：主线程已 acquire，引擎线程负责 release。
-    WindowCreated {
-        window: NdkPtr<ANativeWindow>,
-        width: i32,
-        height: i32,
-        density: f32,
-    },
-    /// 引擎停止使用窗口并 release 后回执，主线程才从销毁回调返回。
-    WindowDestroyed(NdkPtr<ANativeWindow>, Sender<()>),
-    /// 同一窗口尺寸变化（旋转/分屏），window 指针不变、所有权不变。
-    WindowResized {
-        width: i32,
-        height: i32,
-    },
-    Quit,
+/// 引擎线程持有的资源（生命周期由 §3.4 状态机决定）。
+struct Resources<M> {
+    /// 当前持有的窗口引用（接手回调侧 acquire 的那一份）。
+    window: Option<NativeWindowWrapper>,
+    /// 渲染器；`Some` ⟺ 状态机处于 HasSurface。
+    renderer: Option<VelloRenderer>,
+    /// 已 attach 到本线程 Looper 的输入队列。
+    queue: *mut AInputQueue,
+    /// 待 attach 的队列指针（由 `QueueCreated` 消息带来，`AttachQueue` 取用）。
+    pending_queue: *mut AInputQueue,
+    /// 最近一次**已布局**的视图树：T13 的 hit-test 直接复用它，避免
+    /// 「一触重建两次」（SPEC §7.7 性能约束）。
+    frame: Option<View<M>>,
 }
 
-/// 引擎句柄，生命周期与 Activity 实例一致（裸指针存于 `activity.instance`）。
-struct Engine {
-    tx: Sender<EngineMsg>,
-    /// 引擎线程 Looper，prepare 完成后注册（供主线程 `ALooper_wake`）。
-    looper: Arc<AtomicPtr<ALooper>>,
-    join: Option<JoinHandle<()>>,
+impl<M> Default for Resources<M> {
+    fn default() -> Self {
+        Self {
+            window: None,
+            renderer: None,
+            queue: ptr::null_mut(),
+            pending_queue: ptr::null_mut(),
+            frame: None,
+        }
+    }
 }
 
 /// 框架入口：由 cdylib 导出的 `ANativeActivity_onCreate` 调用（SPEC §7.9）。
@@ -140,7 +133,7 @@ unsafe fn bootstrap<A: Activity + Send>(
         }
 
         let (tx, rx) = unbounded();
-        let looper = Arc::new(AtomicPtr::new(ptr::null_mut()));
+        let looper = null_looper_slot();
 
         let join = match thread::Builder::new().name("velm-engine".into()).spawn({
             let looper = looper.clone();
@@ -153,13 +146,11 @@ unsafe fn bootstrap<A: Activity + Send>(
             }
         };
 
-        let engine = Box::new(Engine {
-            tx,
-            looper,
-            join: Some(join),
-        });
+        // 把上下文发布到 activity.instance（所有权移交，onDestroy 取回）。
         // SAFETY: 契约保证 activity 在 onCreate 期间有效独占。
-        unsafe { (*activity).instance = Box::into_raw(engine) as *mut c_void };
+        if !unsafe { AppContext::install(activity, tx, looper, join) } {
+            log::error!("activity 为空，无法安装上下文");
+        }
 
         // SAFETY: 同上，callbacks 在 Activity 生命周期内有效。
         let callbacks: &mut ANativeActivityCallbacks = unsafe { &mut *(*activity).callbacks };
@@ -192,125 +183,35 @@ fn engine_main<A: Activity>(
             log::error!("ALooper_prepare 返回空，引擎线程退出");
             return;
         }
-        looper_slot.store(looper, Ordering::Release);
+        AppContext::publish_looper(&looper_slot, looper);
         log::info!("引擎线程 Looper 就绪");
 
-        let mut queue: *mut AInputQueue = ptr::null_mut();
-        let mut window: Option<NativeWindowWrapper> = None;
-        let mut renderer: Option<crate::render::VelloRenderer> = None;
-        // 当前窗口视口；`None` 时按 §3.4 丢弃重绘。
-        let mut viewport: Option<Viewport> = None;
-        // 最近一次**已布局**的视图树：T13 的 hit-test 直接复用它，避免
-        // 「一触重建两次」（SPEC §7.7 性能约束）。
-        let mut frame: Option<View<A::Message>> = None;
-        // 窗口创建 / 尺寸变化强制出帧（与消息驱动的 needs_draw 并列）。
-        let mut force_draw = false;
+        let mut state = EngineState::new();
+        let mut res = Resources::<A::Message>::default();
 
         'outer: loop {
             // 先排空控制通道，保证销毁/退出消息优先于输入处理。
             while let Ok(msg) = rx.try_recv() {
-                match msg {
-                    EngineMsg::InputQueueCreated(NdkPtr(q)) => {
-                        attach_queue(&mut queue, looper, q);
-                    }
-                    EngineMsg::InputQueueDestroyed(NdkPtr(q), ack) => {
-                        if queue == q {
-                            detach_queue(&mut queue);
-                        } else {
-                            log::warn!("QueueDestroyed 与当前 attached 队列不一致");
-                        }
-                        // 无论是否匹配都回执：回调必须被放行。
-                        let _ = ack.send(());
-                    }
-                    EngineMsg::WindowCreated {
-                        window: NdkPtr(w),
-                        width,
-                        height,
-                        density,
-                    } => {
-                        if window.is_some() {
-                            log::warn!("新窗口创建时旧窗口仍持有，先释放渲染器与引用");
-                            renderer.take();
-                            window = None;
-                        }
-                        log::info!("引擎获得窗口 {w:p}：{width}x{height} density={density:.2}");
-                        // 接手回调中已 acquire 的引用（不二次 acquire）。
-                        let Some(owned) = (unsafe { NativeWindowWrapper::from_ndk_owned(w) })
-                        else {
-                            log::error!("窗口指针为空，跳过渲染器创建");
-                            continue;
-                        };
-                        window = Some(owned);
-                        match crate::render::VelloRenderer::new(
-                            // 刚赋值，必然为 Some。
-                            window.as_ref().expect("窗口刚写入"),
-                            width.max(0) as u32,
-                            height.max(0) as u32,
-                            density,
-                        ) {
-                            Ok(gpu) => {
-                                log::info!("vello 渲染器已就绪");
-                                renderer = Some(gpu);
-                                viewport = Some(Viewport {
-                                    width,
-                                    height,
-                                    density,
-                                });
-                                // T2 实证「不提交首帧则触摸不投递」：首帧必须由
-                                // Activity 的真实视图树产出（不再是 spike 探针帧）。
-                                force_draw = true;
-                            }
-                            Err(e) => log::error!("vello 渲染器初始化失败: {e}"),
-                        }
-                    }
-                    EngineMsg::WindowDestroyed(NdkPtr(w), ack) => {
-                        let matches = window
-                            .as_ref()
-                            .map(|held| held.as_raw_ptr() == w)
-                            .unwrap_or(false);
-                        if matches {
-                            // 先 drop 渲染器（停止 present、释放 surface），再释放窗口。
-                            renderer.take();
-                            window = None;
-                            // 无窗口后不得再出帧，缓存的树也一并失效（§3.4）。
-                            viewport = None;
-                            frame = None;
-                        } else {
-                            log::warn!("WindowDestroyed 与当前持有窗口不一致");
-                        }
-                        let _ = ack.send(());
-                    }
-                    EngineMsg::WindowResized { width, height } => {
-                        // 同一窗口尺寸变化：重配 swapchain/中间纹理并重绘；
-                        // 渲染器尚未建立（初始化失败）时忽略。
-                        if let Some(gpu) = renderer.as_mut() {
-                            log::info!("窗口 resize：{width}x{height}");
-                            gpu.resize(width.max(0) as u32, height.max(0) as u32);
-                        }
-                        if let Some(vp) = viewport.as_mut() {
-                            vp.width = width;
-                            vp.height = height;
-                        }
-                        // 尺寸变了必须重新布局：resize 只用旧指令重画，坐标已过期。
-                        force_draw = true;
-                    }
-                    EngineMsg::Quit => {
-                        renderer.take();
-                        if !queue.is_null() {
-                            detach_queue(&mut queue);
-                        }
-                        // 显式先释放窗口引用（包装的 Drop 会 release），再退出循环。
-                        drop(window.take());
-                        break 'outer;
-                    }
+                // 同步 ack 必须在动作**执行完之后**才回（销毁回调正阻塞等待）。
+                let ack = dispatch(msg, &mut state, &mut res, looper);
+                if let Some(ack) = ack {
+                    let _ = ack.send(());
+                }
+                if state.is_quitting() {
+                    break 'outer;
                 }
             }
 
-            // 出帧：窗口就绪 / 尺寸变化（force_draw）或消息驱动（needs_draw）。
-            if force_draw || runtime.needs_draw() {
-                force_draw = false;
+            // 出帧：状态机置位（窗口创建 / resize / Redraw）或消息驱动
+            // （`ActivityRuntime` 的 needs_draw，T13 起有消息）。
+            if state.take_draw_request() || runtime.needs_draw() {
                 runtime.take_draw_request();
-                draw_frame(&mut runtime, &mut renderer, viewport, &mut frame);
+                draw_frame(
+                    &mut runtime,
+                    &mut res.renderer,
+                    state.viewport(),
+                    &mut res.frame,
+                );
             }
 
             // SAFETY: 本线程持有 looper；空指针出参表示不取 fd/events/data。
@@ -323,8 +224,8 @@ fn engine_main<A: Activity>(
                 )
             };
 
-            if poll_rc == INPUT_QUEUE_IDENT && !queue.is_null() {
-                drain_input(queue);
+            if poll_rc == INPUT_QUEUE_IDENT && !res.queue.is_null() {
+                drain_input(res.queue);
             } else if poll_rc == ALOOPER_POLL_ERROR {
                 log::error!("ALooper_pollOnce 返回 ERROR，引擎线程退出");
                 break;
@@ -337,6 +238,170 @@ fn engine_main<A: Activity>(
         log::error!("引擎线程发生 panic，受控退出");
     }
     log::info!("引擎线程已退出");
+}
+
+/// 把一条控制消息翻译成 §3.4 的 [`EngineEvent`]，交给状态机并执行返回的动作。
+///
+/// 返回需要回执的一次性 ack 通道：`WindowDestroyed` / `QueueDestroyed` 的
+/// 回调正阻塞等待它，因此**必须**在动作执行完之后、由调用方立即回执——
+/// 指针不匹配、状态机未产生动作等分支也不例外（否则主线程永久阻塞）。
+fn dispatch<M>(
+    msg: EngineMsg,
+    state: &mut EngineState,
+    res: &mut Resources<M>,
+    looper: *mut ALooper,
+) -> Option<Sender<()>> {
+    match msg {
+        EngineMsg::InputQueueCreated(NdkPtr(q)) => {
+            res.pending_queue = q;
+            run(state, EngineEvent::QueueCreated, res, looper);
+            None
+        }
+        EngineMsg::InputQueueDestroyed(NdkPtr(q), ack) => {
+            if res.queue != q {
+                log::warn!("QueueDestroyed 与当前 attached 队列不一致");
+            }
+            run(state, EngineEvent::QueueDestroyed, res, looper);
+            Some(ack)
+        }
+        EngineMsg::WindowCreated {
+            window: NdkPtr(w),
+            width,
+            height,
+            density,
+        } => {
+            // 接手回调中已 acquire 的引用（不二次 acquire）。
+            // SAFETY: 回调侧已 acquire 且窗口在回调期间有效。
+            let Some(owned) = (unsafe { NativeWindowWrapper::from_ndk_owned(w) }) else {
+                log::error!("窗口指针为空，忽略 WindowCreated");
+                return None;
+            };
+            if res.window.is_some() {
+                log::warn!("新窗口到达时旧窗口仍持有，先销毁旧 surface 与引用");
+            }
+            log::info!("引擎获得窗口 {w:p}：{width}x{height} density={density:.2}");
+            res.window = Some(owned);
+            run(
+                state,
+                EngineEvent::WindowCreated(Viewport {
+                    width,
+                    height,
+                    density,
+                }),
+                res,
+                looper,
+            );
+            None
+        }
+        EngineMsg::WindowDestroyed(NdkPtr(w), ack) => {
+            let matches = res
+                .window
+                .as_ref()
+                .map(|held| held.as_raw_ptr() == w)
+                .unwrap_or(false);
+            if matches {
+                run(state, EngineEvent::WindowDestroyed, res, looper);
+            } else {
+                log::warn!("WindowDestroyed 与当前持有窗口不一致");
+            }
+            Some(ack)
+        }
+        EngineMsg::WindowResized { width, height } => {
+            run(
+                state,
+                EngineEvent::WindowResized { width, height },
+                res,
+                looper,
+            );
+            None
+        }
+        EngineMsg::Quit => {
+            run(state, EngineEvent::Quit, res, looper);
+            None
+        }
+    }
+}
+
+/// 状态机单步：取动作并按序执行。
+fn run<M>(
+    state: &mut EngineState,
+    event: EngineEvent,
+    res: &mut Resources<M>,
+    looper: *mut ALooper,
+) {
+    for action in step(state, event) {
+        apply_action(action, state, res, looper);
+    }
+}
+
+/// 执行一个状态机动作。
+///
+/// `Exit` 不在此处处理：调用方通过 `EngineState::is_quitting()` 判断并退出循环
+/// （保证已执行完同批的 `DestroySurface` / `DetachQueue`）。
+fn apply_action<M>(
+    action: EngineAction,
+    state: &EngineState,
+    res: &mut Resources<M>,
+    looper: *mut ALooper,
+) {
+    match action {
+        EngineAction::CreateSurface => {
+            let (Some(vp), Some(window)) = (state.viewport(), res.window.as_ref()) else {
+                log::error!("CreateSurface 但视口或窗口缺失");
+                return;
+            };
+            match VelloRenderer::new(
+                window,
+                vp.width.max(0) as u32,
+                vp.height.max(0) as u32,
+                vp.density,
+            ) {
+                Ok(gpu) => {
+                    log::info!("vello 渲染器已就绪");
+                    res.renderer = Some(gpu);
+                }
+                Err(e) => {
+                    log::error!("vello 渲染器初始化失败: {e}");
+                    // 渲染器建不起来：窗口引用仍要保留（等销毁回调），
+                    // 但本帧无 surface，draw_frame 会按 §3.4 丢弃重绘。
+                }
+            }
+        }
+        EngineAction::ResizeSurface => {
+            let Some(vp) = state.viewport() else {
+                return;
+            };
+            match res.renderer.as_mut() {
+                Some(gpu) => {
+                    log::info!("窗口 resize：{}x{}", vp.width, vp.height);
+                    gpu.resize(vp.width.max(0) as u32, vp.height.max(0) as u32);
+                }
+                None => log::warn!("无渲染器，resize 只更新视口"),
+            }
+        }
+        EngineAction::DestroySurface => {
+            // 顺序固定：先停渲染（drop 渲染器释放 surface），再释放窗口引用。
+            res.renderer = None;
+            res.window = None;
+            // 无窗口后不得再出帧，缓存的已布局树一并失效（§3.4）。
+            res.frame = None;
+            log::info!("surface 与窗口引用已释放");
+        }
+        EngineAction::AttachQueue => {
+            let queue = res.pending_queue;
+            res.pending_queue = ptr::null_mut();
+            if queue.is_null() {
+                log::warn!("AttachQueue 但队列指针为空");
+                return;
+            }
+            attach_queue(&mut res.queue, looper, queue);
+        }
+        EngineAction::DetachQueue => detach_queue(&mut res.queue),
+        EngineAction::Exit => {
+            // 循环依据 is_quitting() 退出；此处仅留日志便于核对时序。
+            log::info!("收到 Exit 动作，准备退出引擎循环");
+        }
+    }
 }
 
 /// 出帧：`on_draw → measure_and_layout → render`，并把**已布局**的树缓存进
@@ -435,31 +500,6 @@ fn drain_input(queue: *mut AInputQueue) {
 }
 
 /// 从 `activity.instance` 借用引擎句柄。
-///
-/// # Safety
-/// 调用方须保证处于 Activity 生命周期内、instance 由 bootstrap 发布且
-/// onDestroy 已取得所有权前不被并发释放（回调均在主线程串行触发）。
-unsafe fn engine_of(activity: *mut ANativeActivity) -> Option<&'static Engine> {
-    // SAFETY: 契约保证 activity 非空且 instance 字段可读。
-    let ptr = unsafe { (*activity).instance } as *mut Engine;
-    if ptr.is_null() {
-        None
-    } else {
-        // SAFETY: 见函数 Safety；主线程回调期间 Box 不被释放。
-        Some(unsafe { &*ptr })
-    }
-}
-
-/// 唤醒引擎线程 Looper（控制消息入队后调用）。
-fn wake_engine(engine: &Engine) {
-    let looper = engine.looper.load(Ordering::Acquire);
-    if !looper.is_null() {
-        // SAFETY: looper 由引擎线程 prepare 获得；onDestroy 先发 Quit/wake
-        // 再 join，故此处不可能晚于引擎线程退出。
-        unsafe { ALooper_wake(looper) };
-    }
-}
-
 /// 在 C 回调边界捕获 panic（ADR-11）。
 fn guard(f: impl FnOnce()) {
     if catch_unwind(AssertUnwindSafe(f)).is_err() {
@@ -474,7 +514,7 @@ unsafe extern "C" fn native_window_created(
     guard(|| {
         log::info!("onNativeWindowCreated: window={window:p}");
         // SAFETY: 回调在主线程、activity/window 有效。
-        let Some(engine) = (unsafe { engine_of(activity) }) else {
+        let Some(ctx) = (unsafe { AppContext::borrow(activity) }) else {
             return;
         };
         if window.is_null() {
@@ -498,9 +538,7 @@ unsafe extern "C" fn native_window_created(
             height,
             density,
         };
-        if engine.tx.send(msg).is_ok() {
-            wake_engine(engine);
-        } else {
+        if !ctx.notify(msg) {
             // 引擎线程已退出：回滚本次 acquire，避免泄漏。
             // SAFETY: 平衡上面的 acquire，window 回调期间仍有效。
             unsafe { ANativeWindow_release(window) };
@@ -515,17 +553,13 @@ unsafe extern "C" fn native_window_destroyed(
     guard(|| {
         log::info!("onNativeWindowDestroyed: window={window:p}");
         // SAFETY: 回调在主线程、activity 有效。
-        let Some(engine) = (unsafe { engine_of(activity) }) else {
+        let Some(ctx) = (unsafe { AppContext::borrow(activity) }) else {
             return;
         };
         let (ack_tx, ack_rx) = unbounded();
-        if engine
-            .tx
-            .send(EngineMsg::WindowDestroyed(NdkPtr(window), ack_tx))
-            .is_ok()
-        {
-            wake_engine(engine);
-            // 阻塞到引擎线程 release 且不再使用该窗口（SPEC §3.3 同步销毁）。
+        if ctx.notify(EngineMsg::WindowDestroyed(NdkPtr(window), ack_tx)) {
+            // 阻塞到引擎线程释放渲染器与窗口引用后才返回——NDK 要求本回调
+            // 返回后不再有任何线程使用该窗口（SPEC §3.3 同步销毁）。
             let _ = ack_rx.recv();
             log::info!("onNativeWindowDestroyed 同步 ack 已收到");
         }
@@ -539,7 +573,7 @@ unsafe extern "C" fn native_window_resized(
     guard(|| {
         // SAFETY: 回调在主线程、activity/window 有效；resized 不改变窗口所有权，
         // 同一 ANativeWindow 仍由引擎线程持有，此处只读取新尺寸并通知，不 acquire。
-        let Some(engine) = (unsafe { engine_of(activity) }) else {
+        let Some(ctx) = (unsafe { AppContext::borrow(activity) }) else {
             return;
         };
         if window.is_null() {
@@ -553,13 +587,7 @@ unsafe extern "C" fn native_window_resized(
             )
         };
         log::info!("onNativeWindowResized: window={window:p} {width}x{height}");
-        if engine
-            .tx
-            .send(EngineMsg::WindowResized { width, height })
-            .is_ok()
-        {
-            wake_engine(engine);
-        }
+        ctx.notify(EngineMsg::WindowResized { width, height });
     });
 }
 
@@ -598,16 +626,10 @@ unsafe extern "C" fn input_queue_created(activity: *mut ANativeActivity, queue: 
     guard(|| {
         log::info!("onInputQueueCreated: queue={queue:p}");
         // SAFETY: 回调在主线程、activity 有效。
-        let Some(engine) = (unsafe { engine_of(activity) }) else {
+        let Some(ctx) = (unsafe { AppContext::borrow(activity) }) else {
             return;
         };
-        if engine
-            .tx
-            .send(EngineMsg::InputQueueCreated(NdkPtr(queue)))
-            .is_ok()
-        {
-            wake_engine(engine);
-        }
+        ctx.notify(EngineMsg::InputQueueCreated(NdkPtr(queue)));
     });
 }
 
@@ -618,16 +640,11 @@ unsafe extern "C" fn input_queue_destroyed(
     guard(|| {
         log::info!("onInputQueueDestroyed: queue={queue:p}");
         // SAFETY: 回调在主线程、activity 有效。
-        let Some(engine) = (unsafe { engine_of(activity) }) else {
+        let Some(ctx) = (unsafe { AppContext::borrow(activity) }) else {
             return;
         };
         let (ack_tx, ack_rx) = unbounded();
-        if engine
-            .tx
-            .send(EngineMsg::InputQueueDestroyed(NdkPtr(queue), ack_tx))
-            .is_ok()
-        {
-            wake_engine(engine);
+        if ctx.notify(EngineMsg::InputQueueDestroyed(NdkPtr(queue), ack_tx)) {
             // 阻塞直到引擎线程完成 detach：NDK 要求该回调返回后
             // 不再有任何线程使用此队列（SPEC §3.3 同步销毁协议）。
             let _ = ack_rx.recv();
@@ -639,24 +656,13 @@ unsafe extern "C" fn input_queue_destroyed(
 unsafe extern "C" fn on_destroy(activity: *mut ANativeActivity) {
     guard(|| {
         log::info!("onDestroy");
-        // SAFETY: 回调在主线程；此处取得 Engine 所有权并回收 Box。
-        let ptr = unsafe { (*activity).instance } as *mut Engine;
-        if ptr.is_null() {
+        // 取得上下文所有权（内部已清空 activity.instance，防止悬垂）。
+        // SAFETY: 回调在主线程；同一 Activity 的 onDestroy 只触发一次。
+        let Some(mut ctx) = (unsafe { AppContext::take(activity) }) else {
+            log::warn!("onDestroy 时 activity.instance 为空，跳过");
             return;
-        }
-        // SAFETY: bootstrap 用 Box::into_raw 发布，onDestroy 仅一次回收。
-        let mut engine = unsafe { Box::from_raw(ptr) };
-        // SAFETY: 回收后立即清空 instance，防止悬垂。
-        unsafe { (*activity).instance = ptr::null_mut() };
-
-        if engine.tx.send(EngineMsg::Quit).is_ok() {
-            wake_engine(&engine);
-        }
-        if let Some(join) = engine.join.take()
-            && join.join().is_err()
-        {
-            log::error!("引擎线程 panic 退出");
-        }
+        };
+        ctx.shutdown();
         log::info!("引擎线程已 join，onDestroy 完成");
     });
 }

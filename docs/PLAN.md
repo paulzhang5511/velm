@@ -311,9 +311,21 @@ T1 workspace 骨架 + 空 cdylib 装机
 
 **Description:** 按 SPEC §3.3/§7.7、ADR-09/11 落地：5 个 C 回调只做 acquire/登记/channel 发布；引擎线程 Looper prepare、`AInputQueue_attachLooper`、pollOnce 唤醒；WindowDestroyed/QueueDestroyed 同步 ack（确认 renderer 停绘/不再 getEvent 后回调才返回）；onDestroy 发 Quit 并 join、释放 context；所有 FFI 入口 catch_unwind；非 motion 事件也保证 finishEvent 一次。
 **Acceptance criteria:**
-- [ ] 回调函数内无阻塞循环/无渲染调用（代码评审 + 日志时序）
-- [ ] 启停 20 次：队列/窗口销毁回调均被执行、线程 join 成功、无 UAF/ANR
+- [x] 回调函数内无阻塞循环/无渲染调用（5 个回调只做 acquire / 读尺寸 / 发布消息；唯一阻塞点是销毁路径的同步 ack）
+- [x] 引擎循环改由 §3.4 状态机驱动：控制消息 → `EngineEvent` → `step` → `EngineAction` → 执行
+- [x] 上下文句柄所有权收敛到 `engine/app_context.rs`（install / borrow / take / shutdown），取走即置空 `activity.instance`
+- [ ] 启停 20 次：队列/窗口销毁回调均被执行、线程 join 成功、无 UAF/ANR（**设备压测**）
 **Verification:** `adb` 压测脚本 + logcat 时序检查
+
+> **实施记录（2026-09-22，T12 完成）**：
+>
+> - 新增 `engine/app_context.rs`：`NdkPtr` / `EngineMsg` / `AppContext`。四个操作覆盖句柄全生命周期——`install`（`Box::into_raw` 发布）、`borrow`（回调借用）、`take`（取回所有权并**立即清空** `activity.instance`）、`shutdown`（Quit → wake → join）。原 `activity_thread` 里的 `Engine` 结构体与 `engine_of` 的 `&'static Engine` 借用被删除。
+> - 引擎循环改为**状态机驱动**：`dispatch(msg) → EngineEvent → step() → apply_action()`。`Resources{window, renderer, queue, pending_queue, frame}` 承载引擎线程持有的资源；`CreateSurface` / `ResizeSurface` / `DestroySurface` / `AttachQueue` / `DetachQueue` / `Exit` 六个动作的执行全部集中在 `apply_action`。
+> - **ack 时序**：`dispatch` 返回 `Option<Sender<()>>`，由循环在动作执行完之后立即回执——指针不匹配、状态机未产生动作的分支也照样回执（否则主线程永久阻塞，ANR）。
+> - `Exit` 动作不在 `apply_action` 内处理：循环依据 `state.is_quitting()` 退出，保证同批的 `DestroySurface` / `DetachQueue` 已先执行完。
+> - 出帧判据改为 `state.take_draw_request() || runtime.needs_draw()`（前者覆盖窗口创建 / resize，后者是消息驱动，T13 起生效），不再有散落的 `force_draw` 局部标志。
+> - `preDispatchEvent` 返回非 0 时**不** finish（与 `android_native_app_glue` 一致：事件已被 IME 接管）；其余路径（含非 motion 事件）保证 `finishEvent` 恰好一次。
+> - 门禁：host/aarch64/x86_64 三目标 clippy `-D warnings` 全绿、android 双 target build 通过、fmt 干净；host 单测 100（96 velm + 4 counter，本次未新增——状态机不变量已由 T8 的 17 个单测覆盖）。启停 20 次压测待设备。
 **Dependencies:** T11
 **Files:** `crates/velm/src/engine/{activity_thread.rs,app_context.rs}`、`crates/velm/src/platform/window.rs`（acquire/release 若 T9 未含）
 **Estimated scope:** M

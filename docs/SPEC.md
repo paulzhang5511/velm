@@ -1135,6 +1135,18 @@ if force_draw || runtime.needs_draw() {          // force_draw：窗口创建 / 
 
 * `WindowDestroyed` 同时清掉缓存的 `frame`；`resize` 后必须**重新布局**（渲染器内部的 `last_frame` 重画只为防止重配后闪黑，坐标已过期）。
 
+**T12 定稿（状态机驱动与上下文所有权）：**
+
+* 引擎循环不再自己判断生命周期，而是：**控制消息 → `EngineEvent` → `events::step` → `EngineAction` → 执行**（`engine::activity_thread::dispatch` / `apply_action`）。「窗口与队列到达顺序任意」「无窗口丢弃重绘」「Quit 后不再产生动作」等不变量由 `events` 及其单测保证。
+
+* **同步 ack 的时序保证**：`WindowDestroyed` / `QueueDestroyed` 的回调阻塞等待 ack，因此引擎必须在**动作执行完之后**立即回执；指针不匹配、状态机未产生动作的分支也照样回执，否则主线程永久阻塞（ANR）。
+
+* **上下文句柄所有权收敛在 `engine::app_context`**：`install`（`Box::into_raw` 发布到 `activity.instance`）→ `borrow`（5 个回调借用）→ `take`（onDestroy 取回所有权并**立即清空** `instance`）→ `shutdown`（Quit → wake → join）。句柄有且只有一个所有者，取走即置空，是「启停 20 次无泄漏 / 无 UAF」的结构性保证。
+
+* `Exit` 动作不由 `apply_action` 处理：循环依据 `EngineState::is_quitting()` 退出，确保同批的 `DestroySurface` / `DetachQueue` 已先执行。
+
+* 输入事件：`AInputQueue_preDispatchEvent` 返回非 0 表示事件已被 IME 接管，**不**调用 `finishEvent`（与 `android_native_app_glue` 一致）；其余所有路径（含非 motion 事件）保证 `finishEvent` 恰好一次。
+
 **引擎主循环（引擎线程，伪契约）：**
 
 

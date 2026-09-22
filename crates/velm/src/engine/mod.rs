@@ -14,6 +14,8 @@ pub mod hit_test;
 
 #[cfg(target_os = "android")]
 pub mod activity_thread;
+#[cfg(target_os = "android")]
+pub mod app_context;
 
 #[cfg(target_os = "android")]
 pub use activity_thread::run_native_activity;
