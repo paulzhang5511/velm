@@ -363,23 +363,39 @@ T1 workspace 骨架 + 空 cdylib 装机
 
 **Description:** 编写 adb 脚本化压测：Home/返回/回前台、旋转各 ≥20 次，连续启停 100 次；验证 Model 跨窗口重建保留（SC-5）、引擎线程退出干净（SC-6）、无 surface/input 相关 abort 与 ANR；修复发现的问题。
 **Acceptance criteria:**
-- [ ] 压测脚本可重复运行且全程零崩溃/零 ANR；logcat 无 UAF/非法指针错误
-- [ ] 回前台计数状态保留并可继续交互
+- [x] 压测脚本 `scripts/stress_lifecycle.sh` 已就绪：循环启停（默认 20 轮、`--cycles` 可到 100）、Home↔回前台、旋转、统计销毁同步 ack 与引擎 join、grep 崩溃/ANR，全量日志落盘
+- [ ] 真机/模拟器跑通 20~100 轮：全程零崩溃/零 ANR，logcat 无 UAF/非法指针（**设备验证**）
+- [ ] 回前台计数状态保留并可继续交互（**设备验证**）
 **Verification:** `scripts/stress_lifecycle.sh` 输出与日志归档
 **Dependencies:** T13
 **Files:** `scripts/stress_lifecycle.sh`、按缺陷触及的 engine/render 文件（每轮修复控制范围）
 **Estimated scope:** M
 
+> **实施记录（2026-09-23，T14 脚本侧）：**
+>
+> - `scripts/stress_lifecycle.sh`：循环启停（默认 20 轮、`--cycles` 可到 100），每轮 `am start`/force-stop + Home/回前台 +（可选）`wm rotation` 旋转 +（可选）`input tap`；统计 `同步 ack 已收到` 与 `引擎线程已 join` 次数，grep `FATAL/SIGSEGV/abort/ANR/use-after-free` 判崩溃；全量日志落盘 `stress_lifecycle.log`。
+> - 旋转因 cargo-apk2 默认 `configChanges=0x4a0`（orientation|keyboardHidden|screenSize，**T1 spike 实证**）**不重建 Activity**，只走 surface resize → SC-5 旋转保状态由「引擎线程常驻 + Model 不丢」天然满足；压测的旋转步骤验证的是 surface 重建/重绘而非 Activity 重建。
+> - **缺陷修复循环待设备**：本机无 adb/设备、`cargo apk2` 亦未安装，无法实跑；发现的 abort/ANR/UAF 修复留待连机后在「每轮修复控制范围」内处置（T14 的「修复」子任务不在无设备时展开）。
+> - 包名 `rust.counter`、Activity `android.app.NativeActivity`、引擎日志 tag `VelmEngine`（spike `2026-09-ndk-capabilities.md` 实证）。
+
 ### Task 15: 打包配置与构建文档
 
 **Description:** 固化 cargo-apk2 配置（应用名、minSdk 24、arm64，P1 x86_64）、`AndroidManifest.xml` 语义（NativeActivity、lib_name、hasCode）、release 构建；README 写清工具链（rustup target、NDK r27、cargo-apk2 安装）、构建/安装/logcat 命令链（SC-9，干净环境可复现）。
 **Acceptance criteria:**
-- [ ] 按 README 在干净 shell 中从零完成安装运行
-- [ ] release APK 可安装启动
+- [x] 打包配置固化：`examples/counter/Cargo.toml` 的 `[package.metadata.android]`（minSdk 24 / targetSdk 35 / NativeActivity / `lib_name=counter` / MAIN+LAUNCHER，T1 已写入并 spike 验证）、`scripts/build_run.sh`、`README.md` 命令链
+- [ ] 干净 shell 从零按 README 完成安装运行（**设备验证**）
+- [ ] release APK 可安装启动（**设备验证**）
 **Verification:** 严格照 README 手工走一遍
 **Dependencies:** T14
-**Files:** `examples/counter/Cargo.toml`（metadata）、`AndroidManifest.xml`（若 cargo-apk2 需要外置）、`README.md`、`scripts/build_run.sh`
+**Files:** `examples/counter/Cargo.toml`（metadata）、`AndroidManifest.xml`（cargo-apk2 自动生成，无需外置）、`README.md`、`scripts/build_run.sh`
 **Estimated scope:** M
+
+> **实施记录（2026-09-23，T15 文档侧）：**
+>
+> - `examples/counter/Cargo.toml` 的 `[package.metadata.android]` 在 T1 即写入并通过 spike 验证，本任务不再改动（ADR-04/08 落地）。
+> - 新增 `scripts/build_run.sh`（封装 `cargo apk2 build/install/run` + `adb logcat -s VelmEngine AndroidRuntime`）与根 `README.md`（工具链：rustup target、NDK r27、`cargo install cargo-apk2`、`adb`；构建/安装/日志/压测命令链，SC-9）。
+> - **`AndroidManifest.xml` 无需外置**：cargo-apk2 按 metadata 自动生成（含 `configChanges` 注入），故本任务不产出独立 manifest 文件。
+> - 干净 shell 从零安装运行的实测（Acceptance）待连机验证。
 
 ### Task 16: 质量门禁与文档归位
 
