@@ -502,3 +502,65 @@ fn nested_counter_layout_produces_absolute_pixel_coords() {
         "-1 button",
     );
 }
+
+/// margin 声明在 dp 上，必须同 Dp/sp 一样乘 density（T7 端到端用例暴露的缺陷）。
+///
+/// density=1 时「漏乘」与「正确」结果一致，因此该回归必须在 density≠1 下断言。
+#[test]
+fn margin_is_scaled_by_density() {
+    let mut root = View::<Msg>::linear_layout(
+        Orientation::Vertical,
+        vec![fixed(100.0, 50.0).set_layout_params(LayoutParams {
+            width: LayoutDimension::Dp(100.0),
+            height: LayoutDimension::Dp(50.0),
+            margin: EdgeInsets::all(10.0),
+        })],
+    );
+    measure_and_layout(&mut root, 1080.0, 1920.0, 2.0);
+
+    // 原点 = margin 10dp * 2 = 20px；尺寸 = 100dp * 2 = 200px / 50dp * 2 = 100px。
+    assert_rect(
+        &children_of(&root)[0],
+        Rect {
+            x: 20.0,
+            y: 20.0,
+            width: 200.0,
+            height: 100.0,
+        },
+        "child with dp margin at density=2",
+    );
+}
+
+/// margin 参与主轴推进量时同样要用像素值：相邻兄弟间距 = (10+10)dp * 2 = 40px。
+#[test]
+fn sibling_margins_are_scaled_by_density() {
+    let child = |margin: EdgeInsets| {
+        View::text_view("x").set_layout_params(LayoutParams {
+            width: LayoutDimension::Dp(50.0),
+            height: LayoutDimension::Dp(20.0),
+            margin,
+        })
+    };
+    let mut root = View::<Msg>::linear_layout(
+        Orientation::Vertical,
+        vec![
+            child(EdgeInsets {
+                top: 10.0,
+                ..EdgeInsets::default()
+            }),
+            child(EdgeInsets {
+                top: 10.0,
+                ..EdgeInsets::default()
+            }),
+        ],
+    );
+    measure_and_layout(&mut root, 1080.0, 1920.0, 2.0);
+
+    let kids = children_of(&root);
+    // 尺寸：50dp*2 = 100 宽，20dp*2 = 40 高。
+    assert_close(rect_of(&kids[0]).height, 40.0, "child 0 height");
+    // child 0: y = 10dp*2 = 20，占据 40 高 → 推进到 20+40+20(下 margin 0) = 60
+    assert_close(rect_of(&kids[0]).y, 20.0, "child 0 y");
+    // child 1: 再 +10dp*2 = 20 → y = 80
+    assert_close(rect_of(&kids[1]).y, 80.0, "child 1 y");
+}

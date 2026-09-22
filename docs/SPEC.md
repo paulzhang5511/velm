@@ -930,10 +930,6 @@ pub fn estimate\_text\_width(text: \&str, text\_size\_px: f32) -> f32;
 
 1. 根节点原点 (0,0)，约束为整窗尺寸。**T6 定稿**：根节点沿用与子节点相同的规则——可用区 = 整窗尺寸扣除根节点自身四向 margin（margin 为 0 时即原点 (0,0)、约束为整窗）；否则 MatchParent 根节点会溢出屏幕。
 
-
-
-1. 根节点原点 (0,0)，约束为整窗尺寸。
-
 2. TextView：
 
 * width：MatchParent = 父内容宽；Dp (v)=`v*density`；WrapContent = 文本估算宽（docs 公式 `chars * size * 0.6` 仅为 ASCII 估算，规格允许 v1 使用该近似，但必须 clamp 到父内容宽；中文 / 字形真实度量依赖 §14 Q6 文本方案，P1 精修）。
@@ -955,6 +951,8 @@ pub fn estimate\_text\_width(text: \&str, text\_size\_px: f32) -> f32;
 4. **尺寸非负**（T6 定稿）：任一节点的可用区被 margin 吃光时（`avail - margin < 0`）尺寸退化为 0，不产生负宽高；文本估算宽 clamp 到父内容宽，Dp / MatchParent 不再二次 clamp（显式尺寸按显式处理）。
 
 5. **容器 WrapContent 内部的 MatchParent 子节点**（T6 定稿的 v1 限制）：以求值时父节点的可用区（上界）为准，不再做第二遍重排——即 Android 的「measure 两次」语义在 v1 不实现，需在代码与本规格注明。
+
+6. **margin 是 dp，必须乘 density**（T7 发现并修复的 T6 缺陷，2026-09-22）：margin 与 Dp/sp 同属 dp 空间，但它的三处消费——位置偏移、子节点可用区扣减、主轴推进量——全部发生在物理像素空间，故每一处使用前都必须先乘 `density`。漏乘时 density=1 的结果完全一致，缺陷只在 density≠1 的设备上显现（外边距只有应有值的一半）。回归用例：`tests/layout.rs::margin_is_scaled_by_density`、`sibling_margins_are_scaled_by_density`。
 
 ### 7.5 `engine::hit_test` — 命中测试
 
@@ -979,6 +977,10 @@ pub fn perform\_hit\_test\<Msg: Clone>(root: \&View\<Msg>, x: f32, y: f32) -> Op
 * 不修改 View 树，返回消息的克隆。
 
 * **输入坐标系一致性**：若未来引入 viewport 变换 / 刘海偏移，必须在调用前把 MotionEvent 坐标变换到布局坐标系。
+
+* **模块可见性**（T7 定稿）：`hit_test` 属 §10.2 要求 host 可测的纯逻辑，因此 `engine` 模块**不能整块** `#[cfg(target_os = "android")]` 关闭；android-only 的 `activity_thread` 在**子模块**上单独 gate，`engine` 本身在 host 可见。
+
+* **透明容器**（T7 定稿的语义澄清）：「回落到容器自身监听」发生在子节点探测的 `find_map` 之内——某个子节点若自身及后代都不产生消息（如纯布局容器、未绑监听），探测会继续落到**更下层的兄弟节点**，而不是停在该子节点。即：未绑监听的容器对点击是「透明」的；只有**绑了监听**的容器才会拦下点击。回归用例：`tests/hit_test.rs::transparent_container_passes_through_to_lower_sibling`、`container_with_listener_blocks_lower_sibling`。
 
 ### 7.6 `app::activity` — Activity 与 Intent
 

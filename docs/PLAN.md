@@ -184,17 +184,27 @@ T1 workspace 骨架 + 空 cdylib 装机
 >
 > **两处规格补充（已回写 SPEC §7.4）**：① 根节点的可用区 = 整窗尺寸扣除根自身 margin（否则 MatchParent 根节点带 margin 会溢出屏幕）；② 明确 v1 限制：WrapContent 容器内的 MatchParent 子节点按上界一次求值，不实现 Android 的二次 measure。
 >
+> **后续修正（2026-09-22，T7 发现）**：margin 未乘 density（三处消费点把 dp 当像素用），已修并补两条 density≠1 回归，详见 SPEC §7.4 第 6 条与 T7 实施记录。
+>
 > 门禁：host + aarch64 + x86_64 三目标 clippy `-D warnings` 全绿，`cargo fmt --check` 干净。
 
 ### Task 7: hit_test DFS
 
 **Description:** 按 SPEC §7.5 实现 `perform_hit_test<Msg: Clone>`：容器 rect 不包含直接排除、子节点逆序探测、容器回落、闭区间边界。
 **Acceptance criteria:**
-- [ ] 单测覆盖：叶子命中/未命中、重叠时后添加者优先、容器自身监听回落、边界点坐标
+- [x] 单测覆盖：叶子命中/未命中、重叠时后添加者优先、容器自身监听回落、边界点坐标
 **Verification:** `cargo test -p velm hit_test`
 **Dependencies:** T4
 **Files:** `crates/velm/src/engine/{mod.rs,hit_test.rs}`、`crates/velm/tests/hit_test.rs`
 **Estimated scope:** S（3 文件）
+
+> **实施记录（2026-09-22，T7 完成）**：新增 `crates/velm/src/engine/hit_test.rs` + `crates/velm/tests/hit_test.rs`；`lib.rs` 改为无条件 `pub mod engine`，`engine/mod.rs` 内只对 `activity_thread` 子模块保留 `#[cfg(target_os = "android")]`——否则命中测试失去 host 可测性（§10.2 硬约束）。**15 个 host 单测全绿**（累计 54 = T4 13 + T5 8 + T6 18 + T7 15）。
+>
+> **语义澄清（已回写 SPEC §7.5）**：容器「回落」发生在子节点 `find_map` 之内——子节点及其后代都不产生消息时继续探测更下层兄弟节点，因此**未绑监听的容器对点击是透明的**，只有绑了监听的容器才会拦下点击。两条回归用例分别钉住穿透与拦截。
+>
+> **顺带修掉一个 T6 缺陷**：端到端用例 `hit_after_real_layout_matches_dp_geometry` 发现 margin 未乘 density——`place` / `measure` / `main_extent` 三处把 dp 值直接当像素用，density=1 时结果一致故 T6 单测未暴露；density=2 时外边距只有应有值的一半。已统一收敛到 `margin_px(margin, density)` 换算，并补 `margin_is_scaled_by_density` / `sibling_margins_are_scaled_by_density` 两条 density≠1 回归（SPEC §7.4 第 6 条）。
+>
+> 门禁：host + aarch64 + x86_64 三目标 clippy `-D warnings` 全绿，`cargo fmt --check` 干净。
 
 ### Task 8: app 契约 + 引擎事件状态机（纯逻辑）
 

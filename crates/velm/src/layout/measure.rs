@@ -35,14 +35,14 @@ fn line_height(text_size_px: f32) -> f32 {
 pub fn measure_and_layout<Msg>(root: &mut View<Msg>, width_px: f32, height_px: f32, density: f32) {
     // 根节点与子节点同规则：可用区 = 窗口尺寸扣除自身四向 margin（v1 无 padding）。
     // margin 为 0 时即「原点 (0,0)、约束为整窗尺寸」（SPEC §7.4 第 1 条）。
-    let margin = margin_of(root);
+    let margin = margin_px(margin_of(root), density);
     let avail_w = (width_px - margin.left - margin.right).max(0.0);
     let avail_h = (height_px - margin.top - margin.bottom).max(0.0);
 
     // 先取方向再 place：避免同时对 root 做可变与不可变借用。
     let orientation = root_orientation(root);
     measure(root, avail_w, avail_h, density);
-    place(root, orientation, 0.0, 0.0, 0.0);
+    place(root, orientation, 0.0, 0.0, 0.0, density);
 }
 
 /// 第一遍：求尺寸。返回该节点的物理像素宽高，并写入 `computed_rect`。
@@ -85,7 +85,7 @@ fn measure_group<Msg>(
     let mut cross_max = 0.0f32;
 
     for child in group.children.iter_mut() {
-        let margin = margin_of(child);
+        let margin = margin_px(margin_of(child), density);
         // 子节点可用区 = 父可用区扣除子节点自身四向 margin（v1 无 padding）。
         let child_avail_w = (avail_w - margin.left - margin.right).max(0.0);
         let child_avail_h = (avail_h - margin.top - margin.bottom).max(0.0);
@@ -131,8 +131,9 @@ fn place<Msg>(
     content_x: f32,
     content_y: f32,
     main_offset: f32,
+    density: f32,
 ) {
-    let margin = margin_of(node);
+    let margin = margin_px(margin_of(node), density);
 
     let (x, y) = match parent_orientation {
         Orientation::Vertical => (
@@ -153,8 +154,8 @@ fn place<Msg>(
 
         let mut cursor = 0.0f32;
         for child in group.children.iter_mut() {
-            place(child, orientation, origin_x, origin_y, cursor);
-            cursor += main_extent(child, orientation);
+            place(child, orientation, origin_x, origin_y, cursor, density);
+            cursor += main_extent(child, orientation, density);
         }
     }
 }
@@ -168,12 +169,26 @@ fn root_orientation<Msg>(root: &View<Msg>) -> Orientation {
 }
 
 /// 节点在主轴上占用的推进量 = 主轴尺寸 + 主轴两侧 margin。
-fn main_extent<Msg>(node: &View<Msg>, orientation: Orientation) -> f32 {
+fn main_extent<Msg>(node: &View<Msg>, orientation: Orientation, density: f32) -> f32 {
     let (width, height) = size_of(node);
-    let margin = margin_of(node);
+    let margin = margin_px(margin_of(node), density);
     match orientation {
         Orientation::Vertical => height + margin.top + margin.bottom,
         Orientation::Horizontal => width + margin.left + margin.right,
+    }
+}
+
+/// 四向 margin 从 dp 换算为物理像素（ADR-12：与 Dp/sp 同一套换算）。
+///
+/// margin 声明在 dp 上，但位置偏移、可用区扣减、主轴推进量全部发生在物理
+/// 像素空间，因此每一处使用 margin 前都必须先乘 density——漏乘会让
+/// density=2 的设备上外边距只有应有值的一半（T7 端到端用例暴露的缺陷）。
+fn margin_px(margin: EdgeInsets, density: f32) -> EdgeInsets {
+    EdgeInsets {
+        left: margin.left * density,
+        top: margin.top * density,
+        right: margin.right * density,
+        bottom: margin.bottom * density,
     }
 }
 
