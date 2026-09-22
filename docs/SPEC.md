@@ -904,7 +904,7 @@ impl MotionEvent {
 
 
 
-* 将**纯映射逻辑**抽为 host 可测函数：`fn decode_action(raw_action_masked: u32) -> Option<TouchAction>`（处理 `& 0xff` 掩码与 DOWN/MOVE/UP/CANCEL），FFI 函数只负责 `AInputEvent_getType`、`AMotionEvent_getAction/getX/getY(pointer_index=0)` 后调用纯函数。
+* 将**纯映射逻辑**抽为 host 可测函数：`fn decode_action(raw_action: u32) -> Option<TouchAction>`（处理 `& 0xff` 掩码与 DOWN/MOVE/UP/CANCEL），FFI 函数只负责 `AInputEvent_getType`、`AMotionEvent_getAction/getX/getY(pointer_index=0)` 后调用纯函数。**T5 定稿**：`decode_action` **在函数内部**先与掩码求交再匹配，故对已掩码 / 未掩码输入幂等；v1 只支持单点，`POINTER_DOWN(5)`/`POINTER_UP(6)` 及 HOVER/SCROLL/BUTTON 等一律返回 `None`（由引擎侧 finishEvent 后丢弃）。
 
 * 常量的整数类型以 `raw-ndk-sys`/bindgen 实际绑定为准（docs 代码在 `as i32/as u32` 上存在可疑转换，实现时以编译为准，不保留无依据的强转）。
 

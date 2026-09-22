@@ -152,12 +152,20 @@ T1 workspace 骨架 + 空 cdylib 装机
 **Description:** 按 SPEC §7.3 实现 `TouchAction`、`MotionEvent` 与纯函数 `decode_action(raw: u32) -> Option<TouchAction>`（`&0xff` 掩码 + DOWN/MOVE/UP/CANCEL/非法值）；`unsafe from_ndk` 仅在 `cfg(target_os="android")` 编译，负责类型判断与 getX/getY(index=0) 后调用纯函数。常量类型以 T3 清单为准，不保留无依据强转。
 
 **Acceptance criteria:**
-- [ ] host 单测覆盖 4 种 action、带 pointer index 位的掩码值、非法值返回 None
-- [ ] android 构建通过且 FFI 壳内无业务分支
+- [x] host 单测覆盖 4 种 action、带 pointer index 位的掩码值、非法值返回 None
+- [x] android 构建通过且 FFI 壳内无业务分支
 **Verification:** `cargo test -p velm event`；`cargo clippy -p velm --target aarch64-linux-android -- -D warnings`
 **Dependencies:** T3（符号清单；纯函数部分可先做）
 **Files:** `crates/velm/src/event/{mod.rs,motion_event.rs}`、`crates/velm/tests/event.rs`
 **Estimated scope:** S（3 文件）
+
+> **实施记录（2026-09-22，T5 完成）**：新增 `crates/velm/src/event/{mod,motion_event}.rs` + `crates/velm/tests/event.rs`，`lib.rs` 无条件 `pub mod event`（顺带修正模块清单中 T5/T6 编号错位）。**8 个 host 单测全绿**（4 种 action、带 pointer index 的高 8 位掩码、掩码幂等、POINTER_DOWN/UP 与 HOVER/SCROLL/BUTTON 等不支持 action、`u32::MAX` 等非法值、getter、Clone）。
+>
+> **关键实证（T3 清单已验证落地）**：`AMOTION_EVENT_ACTION_*` 常量在 raw-ndk-sys 中类型为 `u32`（`_bindgen_ty_23 = c_uint`），`AInputEvent_getType` / `AMotionEvent_getAction` 返回 `i32`（需 `as i32` / `as u32` 显式转换，spec 要求不留无依据强转）。模块内手写 u32 常量（host 不可用 raw-ndk-sys），并用 `#[cfg(target_os = "android")] const _: () = { assert!(...) }` 在 **android 编译期**校验其与 NDK 绑定一致，防止漂移。
+>
+> **规格澄清（已回写 SPEC §7.3）**：`decode_action` 在函数**内部**做 `& 0xff`，对已掩码 / 未掩码输入幂等；v1 单点，多点触控 action 返回 `None`。
+>
+> 门禁：host + aarch64 + x86_64 三目标 clippy `-D warnings` 全绿，`cargo fmt --check` 干净；累计 21 个 host 单测（T4 13 + T5 8）。**未覆盖**：`from_ndk` 只能在设备侧验证，留待 T13 真机闭环。
 
 ### Task 6: layout 测量（margin / density / WrapContent 修正）
 
