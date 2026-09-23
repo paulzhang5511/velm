@@ -30,7 +30,7 @@
 
 ## 外部渲染依赖（重要）
 
-渲染层依赖本地 path 依赖 `vello_gpu` 0.2 / `vello_common` 0.2 / `glifo` 0.3（wgpu 30）。**这些 crate 来自 vello 仓库的本地工作副本，目录 `vello/` 已加入 `.gitignore`，不纳入本仓库版本控制。**
+渲染层依赖 `vello_gpu` 0.2 / `vello_common` 0.2 / `glifo` 0.3（wgpu 30），声明为 `path + version` 双位置（`crates/velm/Cargo.toml`）：本地开发走可编辑的 `vello/`，`cargo publish` 时自动改用 crates.io 注册表版本。**这些 crate 来自 vello 仓库的本地工作副本，目录 `vello/` 已加入 `.gitignore`，不纳入本仓库版本控制。**
 
 构建前需将对应版本的 vello 仓库放置于仓库根（与 `vello_gpu` 0.2 / `vello_common` 0.2 / `glifo` 0.3 对应）：
 
@@ -134,6 +134,20 @@ scripts/stress_lifecycle.sh --tap        # 每轮点一下 +1（顺带压输入�
 - `docs/DECISIONS.md`：架构决策记录（ADR）
 - `docs/prd_v1.md`、`docs/架构设计文档.md`：产品需求与架构设计
 - `docs/spikes/`：关键技术实证
+
+## 发布到 crates.io（前置条件）
+
+velm 的渲染依赖采用 `path + version` 双位置声明：本地开发走可编辑的 `vello/`，`cargo publish` 时自动改用 crates.io 注册表版本（见上文「外部渲染依赖」）。
+
+**当前无法发布**，硬前置：`vello_gpu` 0.2.0 尚未在 crates.io 上架（仅有 0.1.0 空占位），而 crates.io 要求所有依赖都能从其索引解析（不接受 git / path 依赖，仅接受注册表版本）。待 linebender 将 `vello_gpu` 0.2.0（及 `vello_gpu_shaders` / `vello_common` / `glifo`）正式发布后，直接执行：
+
+```bash
+cargo publish -p velm
+```
+
+即可，无需再改清单。crate 名 `velm` 在 crates.io 当前可用（发布前请再确认未被占用）。
+
+> 注：改用 git 源也**无法绕过**该限制——`cargo publish` 会把 git 依赖改写为注册表版本需求去 crates.io 索引查找，缺版本即失败。必须由上游先把 `vello_gpu` 0.2.0 发到 crates.io。
 
 ## License
 
