@@ -89,13 +89,15 @@ wasm-bindgen = "0.2.115"
 wasm-bindgen-futures = "0.4.64"
 wasm-bindgen-test = "0.3.64"
 web-sys = "0.3.92"
-vello_common = { version = "0.2.0", path = "vello/vello_common", default-features = false }
-vello_cpu = { version = "0.2.0", path = "vello/vello_cpu" }
-vello_gpu = { version = "0.2.0", path = "vello/vello_gpu", default-features = false }
-vello_gpu_shaders = { version = "0.2.0", path = "vello/vello_gpu_shaders" }
-glifo = { version = "0.3.0", path = "vello/glifo", default-features = false }
-vello_example_scenes = { path = "vello/vello_tests/vello_example_scenes" }
-vello_dev_macros = { path = "vello/vello_tests/vello_dev_macros" }
+# T16 后续：vello 系列改为 linebender/vello 上游 git 依赖（pin 到 vello_gpu=0.2.0 对应的 main HEAD）。
+# 注意：crates.io 不接受 git 依赖，故这仅用于「本地/CI 构建走 git 源」；真正发布须等上游上架或走 fork 改名方案。
+vello_common = { version = "0.2.0", git = "https://github.com/linebender/vello", rev = "9d1eb48bd7c943269de759405bdb619e37e55a82", default-features = false, features = ["std"] }
+vello_cpu = { version = "0.2.0", git = "https://github.com/linebender/vello", rev = "9d1eb48bd7c943269de759405bdb619e37e55a82" }
+vello_gpu = { version = "0.2.0", git = "https://github.com/linebender/vello", rev = "9d1eb48bd7c943269de759405bdb619e37e55a82", default-features = false, features = ["wgpu", "text"] }
+vello_gpu_shaders = { version = "0.2.0", git = "https://github.com/linebender/vello", rev = "9d1eb48bd7c943269de759405bdb619e37e55a82" }
+glifo = { version = "0.3.0", git = "https://github.com/linebender/vello", rev = "9d1eb48bd7c943269de759405bdb619e37e55a82", default-features = false, features = ["std"] }
+vello_example_scenes = { git = "https://github.com/linebender/vello", rev = "9d1eb48bd7c943269de759405bdb619e37e55a82" }
+vello_dev_macros = { git = "https://github.com/linebender/vello", rev = "9d1eb48bd7c943269de759405bdb619e37e55a82" }
 wgpu = { version = "30.0.0", default-features = false, features = ["std", "wgsl"] }
 naga = { version = "30.0.0", default-features = false }
 log = "0.4.29"

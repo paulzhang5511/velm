@@ -29,17 +29,15 @@ wgpu = { version = "30", default-features = false, features = ["vulkan", "wgsl",
 pollster = "0.4"
 raw-window-handle = "0.6"
 # vello_gpu 0.2.0（Sparse Strips 架构，Renderer/Resources/Scene 等新 API）。
-# 采用 path + version 双位置声明（Cargo 官方推荐发布写法）：本地开发走 `path`（仓库根的
-# vello/，可编辑、保留 T16 本地迭代），`cargo publish` 时自动改用 crates.io 注册表版本。
-# 注意：vello_gpu 尚未在 crates.io 正式发布（仅有 0.1.0 占位），故「发布」须等 linebender
-# 先发布 vello_gpu 0.2.0；届时 `cargo publish -p velm` 即用注册表 0.2.0，无需改此清单。
-vello_gpu = { path = "../../vello/vello_gpu", version = "0.2.0", default-features = false, features = ["wgpu", "text"] }
+# 走 linebender/vello 上游 git 依赖（pin 到 vello_gpu=0.2.0 对应的 main HEAD rev）；
+# crates.io 不接受 git 依赖，故这仅用于本地/CI 构建，发布须等上游上架或走 fork 改名方案。
+vello_gpu = { git = "https://github.com/linebender/vello", rev = "9d1eb48bd7c943269de759405bdb619e37e55a82", version = "0.2.0", default-features = false, features = ["wgpu", "text"] }
 # vello_gpu 内部用 vello_common 的 peniko/kurbo/color，velm 渲染层与字体层直接复用同一份，
 # 保证 peniko::Color/AlphaColor<Srgb> 类型同一（set_paint 接收 AlphaColor<Srgb>）。
-vello_common = { path = "../../vello/vello_common", version = "0.2.0", default-features = false, features = ["std"] }
+vello_common = { git = "https://github.com/linebender/vello", rev = "9d1eb48bd7c943269de759405bdb619e37e55a82", version = "0.2.0", default-features = false, features = ["std"] }
 # 字形类型 `glifo::Glyph`：vello_gpu 的 `Scene::glyph_run().fill_glyphs()` 严格依赖它，
 # 而 vello_gpu/vello_common 均未公开再导出该类型，故 velm 直接依赖 glifo 仓库
 # （与 vello_gpu/vello_common 同源，peniko/vello_common 版本自然统一）。需 std（Android 可用）。
-glifo = { path = "../../vello/glifo", version = "0.3.0", default-features = false, features = ["std"] }
+glifo = { git = "https://github.com/linebender/vello", rev = "9d1eb48bd7c943269de759405bdb619e37e55a82", version = "0.3.0", default-features = false, features = ["std"] }
 # T2 Slice 3 文本（ADR-06：skrifa 直绘，与 vello 内部同版本 0.44）
 skrifa = "0.44"
