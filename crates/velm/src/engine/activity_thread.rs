@@ -38,7 +38,8 @@ use crate::engine::app_context::{AppContext, EngineMsg, NdkPtr, null_looper_slot
 use crate::engine::events::{EngineAction, EngineEvent, EngineState, Viewport, step};
 use crate::engine::hit_test::perform_hit_test;
 use crate::event::{MotionEvent, TouchAction};
-use crate::layout::measure_and_layout;
+use crate::layout::measure_and_layout_with;
+use crate::platform::DisplayMetrics;
 use crate::platform::window::NativeWindowWrapper;
 use crate::render::VelloRenderer;
 use crate::view::View;
@@ -362,7 +363,7 @@ fn apply_action<M>(
                 window,
                 vp.width.max(0) as u32,
                 vp.height.max(0) as u32,
-                vp.density,
+                DisplayMetrics::from_viewport(&vp),
             ) {
                 Ok(gpu) => {
                     log::info!("vello 渲染器已就绪");
@@ -431,11 +432,9 @@ fn draw_frame<A: Activity>(
         return;
     };
     let mut root = runtime.view();
-    measure_and_layout(
+    measure_and_layout_with(
         &mut root,
-        vp.width.max(0) as f32,
-        vp.height.max(0) as f32,
-        vp.density,
+        &DisplayMetrics::from_viewport(&vp),
     );
     log::info!("出帧：{}x{} density={:.2}", vp.width, vp.height, vp.density);
     gpu.render(&root);

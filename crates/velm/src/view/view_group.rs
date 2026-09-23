@@ -1,7 +1,7 @@
 //! view/view_group.rs — 容器视图节点（LinearLayout）。
 
 use super::View;
-use super::params::{Background, LayoutParams, Orientation, Rect};
+use super::params::{Background, EdgeInsets, LayoutParams, Orientation, Rect, Stroke};
 
 /// 容器节点：按 [`Orientation`] 顺序排列子节点（v1 手写 LinearLayout，ADR-05）。
 ///
@@ -12,6 +12,11 @@ pub struct ViewGroup<Msg> {
     pub orientation: Orientation,
     /// 背景填充与圆角；默认无背景。
     pub background: Background,
+    /// 描边（边框）；默认无描边。
+    pub stroke: Stroke,
+    /// 四向内边距（dp；布局阶段乘 density，ADR-12）。子节点布局在「自身内容区扣
+    /// 除 padding」之内，模拟 Android 容器的内缩。
+    pub padding: EdgeInsets,
     /// 布局参数（宽高规格与外边距）。
     pub layout_params: LayoutParams,
     /// 子节点列表；绘制与命中测试均按「后添加者在上层」处理。
@@ -32,6 +37,8 @@ impl<Msg> ViewGroup<Msg> {
         Self {
             orientation,
             background: Background::default(),
+            stroke: Stroke::default(),
+            padding: EdgeInsets::default(),
             layout_params,
             children,
             on_click_listener: None,

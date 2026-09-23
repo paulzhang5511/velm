@@ -17,6 +17,7 @@ fn as_text<Msg>(view: &View<Msg>) -> &velm::view::TextView<Msg> {
     match view {
         View::TextView(tv) => tv,
         View::ViewGroup(_) => panic!("expected TextView"),
+        View::Widget(_) => panic!("expected TextView"),
     }
 }
 
@@ -25,6 +26,7 @@ fn as_group<Msg>(view: &View<Msg>) -> &velm::view::ViewGroup<Msg> {
     match view {
         View::ViewGroup(vg) => vg,
         View::TextView(_) => panic!("expected ViewGroup"),
+        View::Widget(_) => panic!("expected ViewGroup"),
     }
 }
 

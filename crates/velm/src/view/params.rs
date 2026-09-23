@@ -97,3 +97,16 @@ pub struct Background {
     /// 圆角半径（物理像素）。
     pub corner_radius: f32,
 }
+
+/// 描边样式（Android 的 stroke / 边框）。
+///
+/// 用于 CardView 的轮廓、EditText 的输入边框、CheckBox 的方框等。线宽以 dp 声明，
+/// 布局阶段乘 density 换算为像素（与 margin / dp 同一套规则，ADR-12）。`color` 为
+/// `None` 时不描边。
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Stroke {
+    /// 描边色；`None` 表示无描边。
+    pub color: Option<Color>,
+    /// 线宽（dp；布局阶段乘 density）。
+    pub width_dp: f32,
+}

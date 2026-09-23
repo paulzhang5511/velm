@@ -49,5 +49,10 @@ pub fn density_from_dpi(dpi: i32) -> f32 {
     }
 }
 
+/// Android 风格密度模型（density bucket / sp-dp 分离 / 像素取整，host 可测）。
+pub mod display_metrics;
+
+pub use display_metrics::{DensityBucket, DisplayMetrics};
+
 #[cfg(target_os = "android")]
 pub mod window;

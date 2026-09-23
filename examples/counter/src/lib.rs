@@ -119,9 +119,11 @@ mod tests {
                 .map(|child| match child {
                     View::TextView(tv) => tv.computed_rect,
                     View::ViewGroup(g) => g.computed_rect,
+                    View::Widget(w) => w.common.computed_rect,
                 })
                 .collect(),
             View::TextView(_) => panic!("根节点应为容器"),
+            View::Widget(_) => panic!("根节点应为容器"),
         }
     }
 
@@ -173,8 +175,10 @@ mod tests {
             View::ViewGroup(group) => match &group.children[0] {
                 View::TextView(tv) => assert_eq!(tv.text, "计数：1"),
                 View::ViewGroup(_) => panic!("第一个子节点应为文本"),
+                View::Widget(_) => panic!("第一个子节点应为文本"),
             },
             View::TextView(_) => panic!("根节点应为容器"),
+            View::Widget(_) => panic!("根节点应为容器"),
         }
     }
 }

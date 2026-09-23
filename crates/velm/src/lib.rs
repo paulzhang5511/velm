@@ -20,9 +20,10 @@ pub use event::{MotionEvent, TouchAction};
 /// 颜色类型：`on_draw` 构造背景 / 文字颜色时使用（`peniko::Color` 的再导出，
 /// 省去应用 crate 再声明一次 peniko 依赖）。
 pub use peniko::Color;
+pub use platform::{DensityBucket, DisplayMetrics};
 pub use view::{
-    Background, EdgeInsets, LayoutDimension, LayoutParams, Orientation, Rect, TextView, View,
-    ViewGroup,
+    Background, CommonStyle, EdgeInsets, ImageScale, LayoutDimension, LayoutParams, Orientation,
+    ProgressOrientation, Rect, Stroke, TextView, View, ViewGroup, WidgetKind, WidgetView,
 };
 
 /// 应用入口（android-only：依赖 NDK 回调表）。

@@ -1,6 +1,6 @@
 //! engine/hit_test.rs — 点击命中测试（host 可测，无任何 android 符号）。
 
-use crate::view::View;
+use crate::view::{View, WidgetKind};
 
 /// 在已完成布局的 View 树中执行 DFS 命中测试，返回被点击节点绑定的消息。
 ///
@@ -24,21 +24,46 @@ use crate::view::View;
 /// 「透明」的，事件会穿透到它下面的兄弟节点；只有容器**绑定了监听**时，
 /// 才会真正拦下这次点击。
 pub fn perform_hit_test<Msg: Clone>(root: &View<Msg>, x: f32, y: f32) -> Option<Msg> {
-    match root {
-        View::TextView(tv) => tv
-            .computed_rect
-            .contains(x, y)
-            .then(|| tv.on_click_listener.clone())
-            .flatten(),
-        View::ViewGroup(vg) => {
-            if !vg.computed_rect.contains(x, y) {
-                return None;
+    if !node_rect(root).contains(x, y) {
+        return None;
+    }
+    // 容器：逆序探测子节点，未命中则回落到自身监听。
+    if let Some(children) = node_children(root) {
+        for child in children.iter().rev() {
+            if let Some(msg) = perform_hit_test(child, x, y) {
+                return Some(msg);
             }
-            vg.children
-                .iter()
-                .rev()
-                .find_map(|child| perform_hit_test(child, x, y))
-                .or_else(|| vg.on_click_listener.clone())
         }
+    }
+    node_listener(root)
+}
+
+/// 节点布局后的绝对像素矩形（所有节点类型统一）。
+fn node_rect<Msg>(node: &View<Msg>) -> crate::view::Rect {
+    match node {
+        View::TextView(tv) => tv.computed_rect,
+        View::ViewGroup(vg) => vg.computed_rect,
+        View::Widget(w) => w.common.computed_rect,
+    }
+}
+
+/// 节点的点击消息（未绑定为 `None`）。
+fn node_listener<Msg: Clone>(node: &View<Msg>) -> Option<Msg> {
+    match node {
+        View::TextView(tv) => tv.on_click_listener.clone(),
+        View::ViewGroup(vg) => vg.on_click_listener.clone(),
+        View::Widget(w) => w.common.on_click_listener.clone(),
+    }
+}
+
+/// 容器的子节点切片；非容器返回 `None`（命中测试不再下钻）。
+fn node_children<Msg>(node: &View<Msg>) -> Option<&[View<Msg>]> {
+    match node {
+        View::ViewGroup(vg) => Some(&vg.children),
+        View::Widget(w) => match &w.kind {
+            WidgetKind::Card(card) => Some(&card.children),
+            _ => None,
+        },
+        View::TextView(_) => None,
     }
 }

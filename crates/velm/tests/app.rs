@@ -200,6 +200,7 @@ fn view_reflects_current_model() {
     match view {
         View::TextView(tv) => assert_eq!(tv.text, "count=1"),
         View::ViewGroup(_) => panic!("期望 TextView"),
+        View::Widget(_) => panic!("期望 TextView"),
     }
 }
 

@@ -14,7 +14,7 @@ pub mod font;
 #[cfg(target_os = "android")]
 pub mod vello_renderer;
 
-pub use scene::{DrawCommand, build_draw_list, centered_baseline, sp_to_px};
+pub use scene::{DrawCommand, build_draw_list, build_draw_list_with, centered_baseline, sp_to_px};
 
 #[cfg(target_os = "android")]
 pub use vello_renderer::VelloRenderer;

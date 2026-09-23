@@ -34,6 +34,7 @@ fn rect_of(view: &View<Msg>) -> Rect {
     match view {
         View::TextView(tv) => tv.computed_rect,
         View::ViewGroup(vg) => vg.computed_rect,
+        View::Widget(w) => w.common.computed_rect,
     }
 }
 
@@ -41,6 +42,7 @@ fn children_of(view: &View<Msg>) -> &Vec<View<Msg>> {
     match view {
         View::ViewGroup(vg) => &vg.children,
         View::TextView(_) => panic!("expected ViewGroup"),
+        View::Widget(_) => panic!("expected ViewGroup"),
     }
 }
 
@@ -276,9 +278,10 @@ fn text_view_wrap_content_uses_text_estimate() {
     let mut root = View::<Msg>::text_view("0").set_text_size(28.0);
     measure_and_layout(&mut root, 1080.0, 1920.0, 1.0);
 
-    // 宽 = 1 char * 28px * 0.6 = 16.8；高 = 28 * 1.4 = 39.2
-    assert_close(rect_of(&root).width, 16.8, "wrap content width");
-    assert_close(rect_of(&root).height, 39.2, "wrap content height");
+    // 宽 = 1 char * 28px * 0.6 = 16.8 → 四舍五入 17；高 = 28 * 1.4 = 39.2 → 39
+    // （ADR-12：最终物理像素取整，与 Android complexToDimensionPixelSize 一致）。
+    assert_close(rect_of(&root).width, 17.0, "wrap content width (rounded)");
+    assert_close(rect_of(&root).height, 39.0, "wrap content height (rounded)");
 }
 
 #[test]
@@ -457,23 +460,23 @@ fn nested_counter_layout_produces_absolute_pixel_coords() {
     measure_and_layout(&mut root, 1080.0, 1920.0, 1.0);
 
     let kids = children_of(&root);
-    // 计数文本：WrapContent → 16.8 x 39.2
+    // 计数文本：WrapContent → 16.8 x 39.2，经像素取整为 17 x 39（ADR-12）。
     assert_rect(
         &kids[0],
         Rect {
             x: 0.0,
             y: 0.0,
-            width: 16.8,
-            height: 39.2,
+            width: 17.0,
+            height: 39.0,
         },
         "count text",
     );
-    // 按钮行：宽 2*(120+16)=272，高 64+16=80；游标推进到 39.2。
+    // 按钮行：宽 2*(120+16)=272，高 64+16=80；游标推进到 39。
     assert_rect(
         &kids[1],
         Rect {
             x: 0.0,
-            y: 39.2,
+            y: 39.0,
             width: 272.0,
             height: 80.0,
         },
@@ -485,7 +488,7 @@ fn nested_counter_layout_produces_absolute_pixel_coords() {
         &buttons[0],
         Rect {
             x: 8.0,
-            y: 47.2,
+            y: 47.0,
             width: 120.0,
             height: 64.0,
         },
@@ -495,7 +498,7 @@ fn nested_counter_layout_produces_absolute_pixel_coords() {
         &buttons[1],
         Rect {
             x: 144.0,
-            y: 47.2,
+            y: 47.0,
             width: 120.0,
             height: 64.0,
         },

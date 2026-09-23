@@ -28,6 +28,10 @@ fn with_rect(view: View<Msg>, rect: Rect) -> View<Msg> {
             group.computed_rect = rect;
             View::ViewGroup(group)
         }
+        View::Widget(mut w) => {
+            w.common.computed_rect = rect;
+            View::Widget(w)
+        }
     }
 }
 
@@ -49,6 +53,7 @@ fn as_fill(command: &DrawCommand) -> Option<(Rect, [u8; 4], f32)> {
             corner_radius,
         } => Some((*rect, color.to_rgba8().to_u8_array(), *corner_radius)),
         DrawCommand::Text { .. } => None,
+        DrawCommand::StrokeRect { .. } => None,
     }
 }
 
@@ -62,6 +67,7 @@ fn as_text(command: &DrawCommand) -> Option<(&str, f32, [u8; 4])> {
             ..
         } => Some((text.as_str(), *size_px, color.to_rgba8().to_u8_array())),
         DrawCommand::FillRect { .. } => None,
+        DrawCommand::StrokeRect { .. } => None,
     }
 }
 

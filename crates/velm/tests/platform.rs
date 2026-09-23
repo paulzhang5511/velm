@@ -13,6 +13,7 @@ fn rect_of(view: &View<Msg>) -> Rect {
     match view {
         View::TextView(tv) => tv.computed_rect,
         View::ViewGroup(vg) => vg.computed_rect,
+        View::Widget(w) => w.common.computed_rect,
     }
 }
 
@@ -76,6 +77,7 @@ fn density_from_screen_config_reaches_layout() {
     let kids = match &root {
         View::ViewGroup(vg) => &vg.children,
         View::TextView(_) => panic!("期望 ViewGroup"),
+        View::Widget(_) => panic!("期望 ViewGroup"),
     };
     assert_eq!(rect_of(&kids[0]).width, 300.0, "100dp @ density=3 → 300px");
     assert_eq!(rect_of(&kids[0]).height, 150.0, "50dp @ density=3 → 150px");

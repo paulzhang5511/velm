@@ -33,6 +33,7 @@ fn with_rect(mut view: View<Msg>, r: Rect) -> View<Msg> {
     match &mut view {
         View::TextView(tv) => tv.computed_rect = r,
         View::ViewGroup(vg) => vg.computed_rect = r,
+        View::Widget(w) => w.common.computed_rect = r,
     }
     view
 }

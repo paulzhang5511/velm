@@ -2,7 +2,7 @@
 
 use peniko::Color;
 
-use super::params::{Background, LayoutParams, Rect};
+use super::params::{Background, EdgeInsets, LayoutParams, Rect, Stroke};
 
 /// v1 默认字号（sp；布局阶段乘 density，ADR-12）。
 pub const DEFAULT_TEXT_SIZE: f32 = 16.0;
@@ -23,6 +23,10 @@ pub struct TextView<Msg> {
     pub text_color: Color,
     /// 背景填充与圆角；默认无背景。
     pub background: Background,
+    /// 描边（边框）；默认无描边。
+    pub stroke: Stroke,
+    /// 四向内边距（dp；布局阶段乘 density，ADR-12）。Android 组件靠它内缩文本 / 内容。
+    pub padding: EdgeInsets,
     /// 布局参数（宽高规格与外边距）。
     pub layout_params: LayoutParams,
     /// 点击命中所产生的消息；`None` 表示该节点不响应点击。
@@ -39,6 +43,8 @@ impl<Msg> TextView<Msg> {
             text_size: DEFAULT_TEXT_SIZE,
             text_color: DEFAULT_TEXT_COLOR,
             background: Background::default(),
+            stroke: Stroke::default(),
+            padding: EdgeInsets::default(),
             layout_params: LayoutParams::default(),
             on_click_listener: None,
             computed_rect: Rect::default(),

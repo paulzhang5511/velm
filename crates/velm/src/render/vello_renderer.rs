@@ -17,7 +17,7 @@
 use raw_window_handle::HasDisplayHandle;
 use raw_window_handle::HasWindowHandle;
 use vello_common::color::{AlphaColor, Srgb};
-use vello_common::kurbo::{Affine, Rect, RoundedRect, Shape};
+use vello_common::kurbo::{Affine, Rect, RoundedRect, Shape, Stroke};
 use vello_common::peniko::Color;
 use vello_gpu::{
     ClearSettings, Renderer, RenderSize, RenderTargetConfig, Resources, Scene, TargetInit,
@@ -27,6 +27,7 @@ use wgpu;
 
 use crate::error::{Error, Result};
 use crate::platform::window::NativeWindowWrapper;
+use crate::platform::DisplayMetrics;
 use crate::render::font::{FontCache, GlyphRun};
 use crate::render::scene::{DrawCommand, centered_baseline};
 use crate::view::View;
@@ -48,8 +49,8 @@ pub struct VelloRenderer {
     /// 深度纹理视图（Depth24Plus，尺寸 = surface 尺寸），vello_gpu 用它做 overdraw 裁剪。
     depth_view: wgpu::TextureView,
     fonts: FontCache,
-    /// 屏幕密度（sp/dp → 物理像素）；构造时确定，随窗口配置更新。
-    density: f32,
+    /// 屏幕密度与尺寸（sp/dp → 物理像素，含字体缩放）；构造时确定，随窗口配置更新。
+    metrics: DisplayMetrics,
     /// 上一帧的绘制指令：surface 重配 / 尺寸变化后用它重画，避免黑屏。
     last_frame: Vec<DrawCommand>,
 }
@@ -66,7 +67,7 @@ impl VelloRenderer {
         window: &NativeWindowWrapper,
         width: u32,
         height: u32,
-        density: f32,
+        metrics: DisplayMetrics,
     ) -> Result<Self> {
         if width == 0 || height == 0 {
             return Err(Error::InvalidWindowSize(width, height));
@@ -92,7 +93,7 @@ impl VelloRenderer {
             raw_display_handle,
             width,
             height,
-            density,
+            metrics,
         ))
     }
 
@@ -101,7 +102,7 @@ impl VelloRenderer {
         raw_display_handle: raw_window_handle::RawDisplayHandle,
         width: u32,
         height: u32,
-        density: f32,
+        metrics: DisplayMetrics,
     ) -> Result<Self> {
         let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
         descriptor.backends = wgpu::Backends::VULKAN;
@@ -195,7 +196,7 @@ impl VelloRenderer {
             resources,
             depth_view,
             fonts: FontCache::load(),
-            density,
+            metrics,
             last_frame: Vec::new(),
         })
     }
@@ -231,7 +232,7 @@ impl VelloRenderer {
     /// 失败只记日志并跳过本帧，不返回错误、不 panic（ADR-11）；surface 丢失
     /// 时由引擎重建窗口与渲染器（T12）。
     pub fn render<Msg>(&mut self, root: &View<Msg>) {
-        let commands = crate::render::scene::build_draw_list(root, self.density);
+        let commands = crate::render::scene::build_draw_list_with(root, &self.metrics);
         self.present(&commands);
         self.last_frame = commands;
     }
@@ -362,6 +363,31 @@ impl VelloRenderer {
                             .glyph_run(&mut self.resources, &face.data)
                             .font_size(*size_px)
                             .fill_glyphs(glyphs.into_iter());
+                    }
+                }
+                DrawCommand::StrokeRect {
+                    rect,
+                    color,
+                    width_px,
+                    corner_radius,
+                } => {
+                    let rect = Rect::new(
+                        rect.x as f64,
+                        rect.y as f64,
+                        (rect.x + rect.width) as f64,
+                        (rect.y + rect.height) as f64,
+                    );
+                    scene.set_transform(Affine::IDENTITY);
+                    scene.set_paint(*color);
+                    scene.set_stroke(Stroke {
+                        width: *width_px as f64,
+                        ..Default::default()
+                    });
+                    if *corner_radius > 0.0 {
+                        let rounded = RoundedRect::from_rect(rect, *corner_radius as f64);
+                        scene.stroke_path(&rounded.to_path(0.1));
+                    } else {
+                        scene.stroke_rect(&rect);
                     }
                 }
             }
