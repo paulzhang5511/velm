@@ -30,22 +30,9 @@
 
 ## 外部渲染依赖（重要）
 
-渲染层依赖 `vello_gpu` 0.2 / `vello_common` 0.2 / `glifo` 0.3（wgpu 30），声明为 `path + version` 双位置（`crates/velm/Cargo.toml`）：本地开发走可编辑的 `vello/`，`cargo publish` 时自动改用 crates.io 注册表版本。**这些 crate 来自 vello 仓库的本地工作副本，目录 `vello/` 已加入 `.gitignore`，不纳入本仓库版本控制。**
+渲染层依赖 `vello_gpu` 0.2 / `vello_common` 0.2 / `glifo` 0.3（wgpu 30），均声明为 `linebender/vello` 上游的 **git 依赖**（`Cargo.toml` 与 `crates/velm/Cargo.toml`，pin 到 `vello_gpu=0.2.0` 对应的 main HEAD `9d1eb48bd7c943269de759405bdb619e37e55a82`）。**构建时由 cargo 自动从 GitHub 拉取对应 commit，不再需要本地 `vello/` 工作副本——仓库克隆后可直接 `cargo build`。**
 
-构建前需将对应版本的 vello 仓库放置于仓库根（与 `vello_gpu` 0.2 / `vello_common` 0.2 / `glifo` 0.3 对应）：
-
-```
-velm/
-├── Cargo.toml
-├── vello/                # 外部渲染仓库工作副本（gitignore，不提交）
-│   ├── vello_gpu/        # 0.2.x
-│   ├── vello_common/     # 0.2.x
-│   └── glifo/            # 0.3.x
-├── crates/velm/...
-└── examples/counter/...
-```
-
-> 若 `vello/` 缺失，`cargo` 会因 path 依赖解析失败而报错。
+> 早期版本曾用本地 `path` 依赖（要求仓库根放置 `vello/`），现已移除；`vello/` 仍在 `.gitignore` 中，但已非构建必需。
 
 ## 工具链准备
 
@@ -137,17 +124,17 @@ scripts/stress_lifecycle.sh --tap        # 每轮点一下 +1（顺带压输入�
 
 ## 发布到 crates.io（前置条件）
 
-velm 的渲染依赖采用 `path + version` 双位置声明：本地开发走可编辑的 `vello/`，`cargo publish` 时自动改用 crates.io 注册表版本（见上文「外部渲染依赖」）。
+velm 的渲染依赖当前为 `linebender/vello` 的 **git 依赖**（pin 到 rev `9d1eb48…`）。crates.io **不接受 git 依赖**——`cargo publish` 会把 git 依赖改写为注册表版本需求去索引查找，而 `vello_gpu` 0.2.0 尚未在 crates.io 上架（仅有 linebender 占名的 0.1.0 空占位）→ 故**当前无法直接发布**。
 
-**当前无法发布**，硬前置：`vello_gpu` 0.2.0 尚未在 crates.io 上架（仅有 0.1.0 空占位），而 crates.io 要求所有依赖都能从其索引解析（不接受 git / path 依赖，仅接受注册表版本）。待 linebender 将 `vello_gpu` 0.2.0（及 `vello_gpu_shaders` / `vello_common` / `glifo`）正式发布后，直接执行：
+要让 velm 可发布，二选一：
 
-```bash
-cargo publish -p velm
-```
+- **A. 等上游**：待 linebender 在 crates.io 正式发布 `vello_gpu` 0.2.0（及 `vello_gpu_shaders`；`vello_common` / `glifo` 已是注册表版本）后，把这几条依赖改回纯 `version`（去掉 `git` / `rev`），无需再改其它，直接：
+  ```bash
+  cargo publish -p velm
+  ```
+- **B. Fork 改名**：把 `vello_gpu` + `vello_gpu_shaders` 以新名（如 `velm-vello-gpu` / `velm-vello-gpu-shaders`）发布到 crates.io，再把 velm 源码里 `use vello_gpu::` 全部改为新名后发布（不可逆，需你定新 crate 名）。
 
-即可，无需再改清单。crate 名 `velm` 在 crates.io 当前可用（发布前请再确认未被占用）。
-
-> 注：改用 git 源也**无法绕过**该限制——`cargo publish` 会把 git 依赖改写为注册表版本需求去 crates.io 索引查找，缺版本即失败。必须由上游先把 `vello_gpu` 0.2.0 发到 crates.io。
+crate 名 `velm` 在 crates.io 当前可用（发布前请再确认未被占用）。
 
 ## License
 
