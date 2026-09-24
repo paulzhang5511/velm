@@ -440,11 +440,15 @@ T1 workspace 骨架 + 空 cdylib 装机
 
 ### 剩余 v1.1 backlog
 
+> 详细待办（编号 B1~B12、优先级、验收条件、host 可验证性）见 **`docs/BACKLOG.md`**；下表为摘要。
+
 - **SC-10**：margin 精修 / 多密度 Dp 一致性（需多分辨率真机）。
-- **SC-11**：`Intent` 执行器 + `SavedInstanceState` 状态保存 / 恢复。
+- **SC-11**：`Intent` 执行器 + `SavedInstanceState` 状态保存 / 恢复（**当前本机最高优先**，纯逻辑 host 可测）。
 - **SC-12**：`x86_64` 模拟器目标；焦点态（`state_focused`）。
 - **SC-13**：真实文本度量（替换 `chars*size*0.6` 近似）+ 自动换行；`AChoreographer` 动画 / 转场。
 - **SC-14**：`Image` 真实解码与资源管线；`Edit` 软键盘 / IME 接入。
+- **设备依赖（阻断 v1 完成评审）**：SC-1~SC-6 真机证据、T14 启停压测、T15 release APK、按压态真机观感，均需设备 + NDK。
+- **发布**：crates.io 发布仍阻塞于上游 `vello_gpu` 0.2.0 未上架（见 `docs/BACKLOG.md` B11/B12）。
 
 ---
 

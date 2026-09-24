@@ -9,7 +9,7 @@
 | `crates/velm` | 框架核心（rlib）：TEA 运行时、布局、命中测试、vello_gpu 渲染器、NativeActivity 引擎线程 |
 | `examples/counter` | 计数器 demo（cdylib），端到端验证载体（SC-2/3/4） |
 | `scripts/` | `build_run.sh`（构建/安装/启动/日志）、`stress_lifecycle.sh`（生命周期压测） |
-| `docs/` | `SPEC.md`（需求/架构）、`PLAN.md`（里程碑 WBS）、`DECISIONS.md`（ADR）、`prd_v1.md`、`架构设计文档.md`、`spikes/` |
+| `docs/` | `SPEC.md`（需求/架构）、`PLAN.md`（里程碑 WBS）、`BACKLOG.md`（待办清单）、`DECISIONS.md`（ADR）、`prd_v1.md`、`架构设计文档.md`、`spikes/` |
 
 ## 架构概览
 
@@ -118,6 +118,7 @@ scripts/stress_lifecycle.sh --tap        # 每轮点一下 +1（顺带压输入�
 
 - `docs/SPEC.md`：需求与架构规格
 - `docs/PLAN.md`：里程碑 WBS（T1–T16）
+- `docs/BACKLOG.md`：待办清单（B1~B12：设备依赖项、v1.1 功能、发布）
 - `docs/DECISIONS.md`：架构决策记录（ADR）
 - `docs/prd_v1.md`、`docs/架构设计文档.md`：产品需求与架构设计
 - `docs/spikes/`：关键技术实证

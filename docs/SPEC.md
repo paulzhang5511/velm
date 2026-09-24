@@ -634,9 +634,11 @@ velm/
 
 │   ├── SPEC.md                      # 本规格
 
-│   ├── DECISIONS.md                 # ADR-01\~12（决策记录）
+│   ├── DECISIONS.md                 # ADR-01\~14（决策记录）
 
 │   ├── PLAN.md                      # 实现计划与任务拆解
+
+│   ├── BACKLOG.md                   # 待办清单（B1\~B12，v1.1 与设备依赖项）
 
 │   └── spikes/                      # T2/T3 技术验证结论
 
