@@ -18,7 +18,7 @@
 use peniko::Color;
 
 use crate::platform::DisplayMetrics;
-use crate::view::{EdgeInsets, Rect, View, WidgetKind, WidgetView};
+use crate::view::{EdgeInsets, Interaction, Rect, View, WidgetKind, WidgetView};
 
 /// 一条绘制指令。
 ///
@@ -96,14 +96,15 @@ fn collect<Msg>(node: &View<Msg>, metrics: &DisplayMetrics, out: &mut Vec<DrawCo
             if rect.width <= 0.0 || rect.height <= 0.0 {
                 return;
             }
-            draw_background(rect, tv.background, tv.stroke, metrics, out);
+            let it = tv.interaction;
+            draw_background(rect, tv.background, tv.stroke, it, metrics, out);
             if !tv.text.is_empty() {
                 let inner = inner_rect(rect, tv.padding, metrics);
                 out.push(DrawCommand::Text {
                     rect: inner,
                     text: tv.text.clone(),
                     size_px: sp_to_px(tv.text_size, metrics.scaled_density),
-                    color: tv.text_color,
+                    color: it.tint_content(tv.text_color),
                 });
             }
         }
@@ -112,7 +113,14 @@ fn collect<Msg>(node: &View<Msg>, metrics: &DisplayMetrics, out: &mut Vec<DrawCo
             if rect.width <= 0.0 || rect.height <= 0.0 {
                 return;
             }
-            draw_background(rect, group.background, group.stroke, metrics, out);
+            draw_background(
+                rect,
+                group.background,
+                group.stroke,
+                group.interaction,
+                metrics,
+                out,
+            );
             for child in &group.children {
                 collect(child, metrics, out);
             }
@@ -128,6 +136,7 @@ fn collect_widget<Msg>(w: &WidgetView<Msg>, metrics: &DisplayMetrics, out: &mut 
         return;
     }
     let density = metrics.density;
+    let it = w.common.interaction;
     let corner_px = metrics.round_px(w.common.corner_radius_dp * density);
 
     match &w.kind {
@@ -144,27 +153,27 @@ fn collect_widget<Msg>(w: &WidgetView<Msg>, metrics: &DisplayMetrics, out: &mut 
                 };
                 out.push(DrawCommand::FillRect {
                     rect: shadow,
-                    color: Color::from_rgba8(0x00, 0x00, 0x00, alpha),
+                    color: it.tint_content(Color::from_rgba8(0x00, 0x00, 0x00, alpha)),
                     corner_radius: corner_px,
                 });
             }
-            draw_background(rect, w.common.background, w.common.stroke, metrics, out);
+            draw_background(rect, w.common.background, w.common.stroke, it, metrics, out);
             for child in &card.children {
                 collect(child, metrics, out);
             }
         }
         WidgetKind::Button(b) => {
-            draw_background(rect, w.common.background, w.common.stroke, metrics, out);
+            draw_background(rect, w.common.background, w.common.stroke, it, metrics, out);
             let inner = inner_rect(rect, w.common.padding, metrics);
             out.push(DrawCommand::Text {
                 rect: inner,
                 text: b.text.clone(),
                 size_px: sp_to_px(b.text_size, metrics.scaled_density),
-                color: b.text_color,
+                color: it.tint_content(b.text_color),
             });
         }
         WidgetKind::Edit(e) => {
-            draw_background(rect, w.common.background, w.common.stroke, metrics, out);
+            draw_background(rect, w.common.background, w.common.stroke, it, metrics, out);
             let inner = inner_rect(rect, w.common.padding, metrics);
             let (text, color) = if e.text.is_empty() {
                 (e.hint.clone(), e.hint_color)
@@ -176,7 +185,7 @@ fn collect_widget<Msg>(w: &WidgetView<Msg>, metrics: &DisplayMetrics, out: &mut 
                     rect: inner,
                     text,
                     size_px: sp_to_px(e.text_size, metrics.scaled_density),
-                    color,
+                    color: it.tint_content(color),
                 });
             }
         }
@@ -184,13 +193,13 @@ fn collect_widget<Msg>(w: &WidgetView<Msg>, metrics: &DisplayMetrics, out: &mut 
             // v1 仅占位：用占位色填充（真实图片解码留待后续）。
             out.push(DrawCommand::FillRect {
                 rect,
-                color: img.placeholder,
+                color: it.tint_fill(img.placeholder),
                 corner_radius: corner_px,
             });
             if let Some(c) = w.common.stroke.color {
                 out.push(DrawCommand::StrokeRect {
                     rect,
-                    color: c,
+                    color: it.tint_content(c),
                     width_px: metrics.round_px(w.common.stroke.width_dp * density),
                     corner_radius: corner_px,
                 });
@@ -200,7 +209,7 @@ fn collect_widget<Msg>(w: &WidgetView<Msg>, metrics: &DisplayMetrics, out: &mut 
             // 轨道。
             out.push(DrawCommand::FillRect {
                 rect,
-                color: p.track_color,
+                color: it.tint_fill(p.track_color),
                 corner_radius: match p.orientation {
                     crate::view::ProgressOrientation::Horizontal => corner_px,
                     crate::view::ProgressOrientation::Circular => rect.height / 2.0,
@@ -234,7 +243,7 @@ fn collect_widget<Msg>(w: &WidgetView<Msg>, metrics: &DisplayMetrics, out: &mut 
                 };
                 out.push(DrawCommand::FillRect {
                     rect: frect,
-                    color: p.progress_color,
+                    color: it.tint_fill(p.progress_color),
                     corner_radius: radius,
                 });
             }
@@ -243,7 +252,7 @@ fn collect_widget<Msg>(w: &WidgetView<Msg>, metrics: &DisplayMetrics, out: &mut 
             let stroke_w = metrics.round_px(2.0 * density);
             out.push(DrawCommand::StrokeRect {
                 rect,
-                color: c.box_color,
+                color: it.tint_content(c.box_color),
                 width_px: stroke_w,
                 corner_radius: metrics.round_px(2.0 * density),
             });
@@ -252,7 +261,7 @@ fn collect_widget<Msg>(w: &WidgetView<Msg>, metrics: &DisplayMetrics, out: &mut 
                     rect,
                     text: "✓".to_string(),
                     size_px: metrics.round_px(c.size_dp * density * 0.8),
-                    color: c.check_color,
+                    color: it.tint_content(c.check_color),
                 });
             }
         }
@@ -260,7 +269,7 @@ fn collect_widget<Msg>(w: &WidgetView<Msg>, metrics: &DisplayMetrics, out: &mut 
             let radius = rect.height / 2.0;
             out.push(DrawCommand::FillRect {
                 rect,
-                color: if s.checked { s.on_color } else { s.off_color },
+                color: it.tint_fill(if s.checked { s.on_color } else { s.off_color }),
                 corner_radius: radius,
             });
             // 滑块：在轨道内居中、按开关态左右贴边。
@@ -277,7 +286,7 @@ fn collect_widget<Msg>(w: &WidgetView<Msg>, metrics: &DisplayMetrics, out: &mut 
                     width: thumb,
                     height: thumb,
                 },
-                color: s.thumb_color,
+                color: it.tint_fill(s.thumb_color),
                 corner_radius: thumb / 2.0,
             });
         }
@@ -288,24 +297,28 @@ fn collect_widget<Msg>(w: &WidgetView<Msg>, metrics: &DisplayMetrics, out: &mut 
 }
 
 /// 绘制节点的背景填充与描边（圆角半径对 Widget 用 dp 换算后的像素值）。
+///
+/// 颜色经 [`Interaction`] 变换：填充走 `tint_fill`（禁用降透明 / 按下压暗），
+/// 描边走 `tint_content`（仅禁用降透明）。
 fn draw_background(
     rect: Rect,
     background: crate::view::Background,
     stroke: crate::view::Stroke,
+    interaction: Interaction,
     metrics: &DisplayMetrics,
     out: &mut Vec<DrawCommand>,
 ) {
     if let Some(color) = background.color {
         out.push(DrawCommand::FillRect {
             rect,
-            color,
+            color: interaction.tint_fill(color),
             corner_radius: background.corner_radius,
         });
     }
     if let Some(color) = stroke.color {
         out.push(DrawCommand::StrokeRect {
             rect,
-            color,
+            color: interaction.tint_content(color),
             width_px: metrics.round_px(stroke.width_dp * metrics.density),
             corner_radius: background.corner_radius,
         });

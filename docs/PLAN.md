@@ -423,6 +423,31 @@ T1 workspace 骨架 + 空 cdylib 装机
 
 ---
 
+## v1.1 增量记录（SPEC §12 SC-10 ~ SC-15）
+
+> T16 之后按 SPEC §12 的 P1 缺口推进；每项遵循「SPEC 规格 → 实现 → host 测试 → 文档」链路。
+
+### 增量 1：Android 密度模型 + 8 复合组件（ADR-13；提交 1fb7aaf + 704d158）
+
+- 已交付：`platform::DisplayMetrics`（dp/sp 分离、`DensityBucket`、像素四舍五入）、`View::Widget` + `WidgetKind` 八组件（Button/Card/Image/Progress/Check/Switch/Space/Edit）、padding / `Stroke`、`DrawCommand::StrokeRect`；SPEC §7.10、ADR-13。
+- 覆盖：`tests/display_metrics.rs`、`tests/widget.rs`、`tests/widget_kinds.rs`（27 例）。
+
+### 增量 2：交互态 `enabled` / `pressed`（ADR-14）
+
+- 已交付：`view::Interaction` + `View::set_enabled` / `set_pressed`（三节点）；渲染 tint（禁用降透明、按下压暗，几何不变）；命中测试禁用节点对点击透明且不向下传播；`engine::hit_test::{set_pressed_at, clear_pressed}` 引擎用跟踪，并在 `engine/activity_thread.rs` 接线 `ACTION_DOWN → 置位`、`ACTION_UP/CANCEL → 清除`（有变化才重绘）。SPEC §7.11、ADR-14。
+- 覆盖：`tests/interaction.rs`（12 例）；aarch64 交叉编译通过。
+- **设备侧待验**：按压反馈真机观感与「按下不卡态」——跟踪逻辑已在 host 覆盖，仅观感需连机确认。
+
+### 剩余 v1.1 backlog
+
+- **SC-10**：margin 精修 / 多密度 Dp 一致性（需多分辨率真机）。
+- **SC-11**：`Intent` 执行器 + `SavedInstanceState` 状态保存 / 恢复。
+- **SC-12**：`x86_64` 模拟器目标；焦点态（`state_focused`）。
+- **SC-13**：真实文本度量（替换 `chars*size*0.6` 近似）+ 自动换行；`AChoreographer` 动画 / 转场。
+- **SC-14**：`Image` 真实解码与资源管线；`Edit` 软键盘 / IME 接入。
+
+---
+
 ## Risks and Mitigations
 
 | 风险 | 级别 | 触发信号 | 缓解 |

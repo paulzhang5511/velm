@@ -1,7 +1,7 @@
 //! view/view_group.rs — 容器视图节点（LinearLayout）。
 
 use super::View;
-use super::params::{Background, EdgeInsets, LayoutParams, Orientation, Rect, Stroke};
+use super::params::{Background, EdgeInsets, Interaction, LayoutParams, Orientation, Rect, Stroke};
 
 /// 容器节点：按 [`Orientation`] 顺序排列子节点（v1 手写 LinearLayout，ADR-05）。
 ///
@@ -21,6 +21,8 @@ pub struct ViewGroup<Msg> {
     pub layout_params: LayoutParams,
     /// 子节点列表；绘制与命中测试均按「后添加者在上层」处理。
     pub children: Vec<View<Msg>>,
+    /// 交互态（可用 / 按下）；默认可用且未按下。禁用时该容器自身不响应点击。
+    pub interaction: Interaction,
     /// 子节点未命中时回落的点击消息。
     pub on_click_listener: Option<Msg>,
     /// 布局阶段写入的绝对像素矩形；未布局前为全零。
@@ -41,6 +43,7 @@ impl<Msg> ViewGroup<Msg> {
             padding: EdgeInsets::default(),
             layout_params,
             children,
+            interaction: Interaction::default(),
             on_click_listener: None,
             computed_rect: Rect::default(),
         }

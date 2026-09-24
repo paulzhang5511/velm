@@ -22,8 +22,9 @@ pub use event::{MotionEvent, TouchAction};
 pub use peniko::Color;
 pub use platform::{DensityBucket, DisplayMetrics};
 pub use view::{
-    Background, CommonStyle, EdgeInsets, ImageScale, LayoutDimension, LayoutParams, Orientation,
-    ProgressOrientation, Rect, Stroke, TextView, View, ViewGroup, WidgetKind, WidgetView,
+    Background, CommonStyle, EdgeInsets, ImageScale, Interaction, LayoutDimension, LayoutParams,
+    Orientation, ProgressOrientation, Rect, Stroke, TextView, View, ViewGroup, WidgetKind,
+    WidgetView,
 };
 
 /// 应用入口（android-only：依赖 NDK 回调表）。

@@ -110,3 +110,85 @@ pub struct Stroke {
     /// 线宽（dp；布局阶段乘 density）。
     pub width_dp: f32,
 }
+
+/// 禁用态整体透明度（对齐 Android `View` 的 `DISABLED_ALPHA` = 0.5）。
+///
+/// 仅作用于颜色（不改几何）：禁用节点的填充 / 描边 / 文字统一按此系数乘 alpha。
+pub const DISABLED_ALPHA: f32 = 0.5;
+
+/// 按下态背景压暗系数（0.85 ≈ Android `state_pressed` 的 ripple / scrim 观感）。
+pub const PRESSED_SCALE: f32 = 0.85;
+
+/// 交互态：是否可响应点击、是否处于按下态（参考 Android
+/// `View.setEnabled` / `state_enabled` / `state_pressed`）。
+///
+/// v1.1 增量（ADR-14）：
+///
+/// - `enabled = false`：节点**不响应点击**（hit-test 视为透明，事件穿透到下层兄弟），
+///   且绘制时颜色按 [`DISABLED_ALPHA`] 降透明；
+/// - `pressed = true`：仅**背景填充**按 [`PRESSED_SCALE`] 压暗（文字 / 描边不变），
+///   由引擎在 `ACTION_DOWN` → `ACTION_UP/CANCEL` 期间维护；
+/// - 两者同时置位时以 `enabled` 优先（禁用节点忽略按下态）。
+///
+/// 语义与 Android 一致：**只影响本节点**，不自动向下传播到子节点。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Interaction {
+    /// 是否可交互；`false` 时不响应点击且视觉降透明。
+    pub enabled: bool,
+    /// 是否处于按下态。
+    pub pressed: bool,
+}
+
+impl Default for Interaction {
+    /// 默认可用、未按下（普通态）。
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            pressed: false,
+        }
+    }
+}
+
+impl Interaction {
+    /// 是否处于普通态（可用且未按下）——此态下绘制颜色不做任何变换。
+    pub fn is_normal(&self) -> bool {
+        self.enabled && !self.pressed
+    }
+
+    /// 背景填充色变换：禁用 → 降透明；按下 → 压暗；否则原色。
+    pub fn tint_fill(&self, color: Color) -> Color {
+        if !self.enabled {
+            return scale_alpha(color, DISABLED_ALPHA);
+        }
+        if self.pressed {
+            return scale_rgb(color, PRESSED_SCALE);
+        }
+        color
+    }
+
+    /// 内容色（文字 / 描边 / 阴影）变换：仅禁用时降透明。
+    pub fn tint_content(&self, color: Color) -> Color {
+        if self.enabled {
+            color
+        } else {
+            scale_alpha(color, DISABLED_ALPHA)
+        }
+    }
+}
+
+/// 按系数缩放颜色 alpha（其余通道不变）。
+fn scale_alpha(color: Color, factor: f32) -> Color {
+    let [r, g, b, a] = color.to_rgba8().to_u8_array();
+    Color::from_rgba8(r, g, b, (a as f32 * factor).round() as u8)
+}
+
+/// 按系数缩放颜色 RGB（alpha 不变）——用于按下态压暗。
+fn scale_rgb(color: Color, factor: f32) -> Color {
+    let [r, g, b, a] = color.to_rgba8().to_u8_array();
+    Color::from_rgba8(
+        (r as f32 * factor).round() as u8,
+        (g as f32 * factor).round() as u8,
+        (b as f32 * factor).round() as u8,
+        a,
+    )
+}

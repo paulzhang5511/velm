@@ -2,7 +2,7 @@
 
 use peniko::Color;
 
-use super::params::{Background, EdgeInsets, LayoutParams, Rect, Stroke};
+use super::params::{Background, EdgeInsets, Interaction, LayoutParams, Rect, Stroke};
 
 /// v1 默认字号（sp；布局阶段乘 density，ADR-12）。
 pub const DEFAULT_TEXT_SIZE: f32 = 16.0;
@@ -29,6 +29,8 @@ pub struct TextView<Msg> {
     pub padding: EdgeInsets,
     /// 布局参数（宽高规格与外边距）。
     pub layout_params: LayoutParams,
+    /// 交互态（可用 / 按下）；默认可用且未按下。禁用时不响应点击且视觉降透明。
+    pub interaction: Interaction,
     /// 点击命中所产生的消息；`None` 表示该节点不响应点击。
     pub on_click_listener: Option<Msg>,
     /// 布局阶段写入的绝对像素矩形；未布局前为全零。
@@ -46,6 +48,7 @@ impl<Msg> TextView<Msg> {
             stroke: Stroke::default(),
             padding: EdgeInsets::default(),
             layout_params: LayoutParams::default(),
+            interaction: Interaction::default(),
             on_click_listener: None,
             computed_rect: Rect::default(),
         }

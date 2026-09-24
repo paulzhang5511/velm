@@ -36,7 +36,7 @@ use crate::app::Activity;
 use crate::app::state::ActivityRuntime;
 use crate::engine::app_context::{AppContext, EngineMsg, NdkPtr, null_looper_slot};
 use crate::engine::events::{EngineAction, EngineEvent, EngineState, Viewport, step};
-use crate::engine::hit_test::perform_hit_test;
+use crate::engine::hit_test::{clear_pressed, perform_hit_test, set_pressed_at};
 use crate::event::{MotionEvent, TouchAction};
 use crate::layout::measure_and_layout_with;
 use crate::platform::DisplayMetrics;
@@ -529,7 +529,27 @@ fn handle_motion<A: Activity>(
         return;
     }
 
-    // 2) 默认点击语义：只在 DOWN 命中一次（FR-I1 / FR-I3）。
+    // 2) 按压态维护（ADR-14）：DOWN 在命中节点置位，UP/CANCEL 清除；仅在有
+    //    变化时请求重绘（无变化不出帧）。与下面的消息派发共用同一棵已布局树。
+    match motion.action {
+        TouchAction::ActionDown => {
+            if let Some(frame) = res.frame.as_mut()
+                && set_pressed_at(frame, motion.x, motion.y, true)
+            {
+                note_message(state);
+            }
+        }
+        TouchAction::ActionUp | TouchAction::ActionCancel => {
+            if let Some(frame) = res.frame.as_mut()
+                && clear_pressed(frame)
+            {
+                note_message(state);
+            }
+        }
+        _ => {}
+    }
+
+    // 3) 默认点击语义：只在 DOWN 命中一次（FR-I1 / FR-I3）。
     if motion.action != TouchAction::ActionDown {
         return;
     }

@@ -31,7 +31,7 @@
 >
 > `docs/DECISIONS.md`
 >
-> （ADR-01 ~ ADR-13）与 
+> （ADR-01 ~ ADR-14）与 
 >
 > `docs/PLAN.md`
 >
@@ -1314,6 +1314,22 @@ impl VelloRenderer {
 
 **验证**：`tests/display_metrics.rs`（桶划分、dp≠sp、font_scale、取整、`px_to_dp`、`from_viewport`）与 `tests/widget.rs`（各组件 measure / place / scene / hit_test 管线、padding 内缩）全绿；`View` 穷举 `match` 全量补齐 `Widget` 分支。
 
+### 7.11 交互态：`enabled` 与 `pressed`【框架扩展，2026-09-24】
+
+> **溯源**：补齐 ADR-10「v1 不做按压态」的推迟项与 SPEC §12 SC-15，参考 Android `View.setEnabled` / `state_enabled` / `state_pressed`。
+
+* **数据结构**：`view::Interaction { enabled: bool, pressed: bool }`（默认 `enabled = true` / `pressed = false`），挂在三类节点的 `interaction` 字段上（`TextView` / `ViewGroup` / `CommonStyle`）。
+* **API**：`View::set_enabled(bool)` / `View::set_pressed(bool)`——三类节点均生效。
+* **颜色变换**（`Interaction::tint_fill` / `tint_content`，纯函数、host 可测）：
+  * 禁用（`enabled = false`）：颜色 alpha 乘 `DISABLED_ALPHA`（0.5），**几何不变**；
+  * 按下（`pressed = true`）：仅**背景填充** RGB 乘 `PRESSED_SCALE`（0.85）压暗，**文字 / 描边不变**；
+  * `enabled` 优先于 `pressed`（禁用节点忽略按下态）。
+* **命中测试**：禁用节点的监听被视为不存在——对点击**透明**（事件穿透到下层兄弟），见 `engine::hit_test::perform_hit_test`。语义与 Android 一致：**只影响本节点**，不向下传播到子节点（禁用容器内的启用子节点仍可点击）。
+* **按压态跟踪**（引擎用，host 可测）：`engine::hit_test::{set_pressed_at, clear_pressed}`——前者按与命中测试相同的顺序（子节点逆序、闭区间）在命中**可交互**节点置位并返回是否变化（供引擎决定是否重绘），后者清除整树 `pressed` 作 `UP/CANCEL` 兜底。
+* **引擎接线**（android-only，`engine/activity_thread.rs`）：`ACTION_DOWN` → `set_pressed_at(frame, x, y, true)`；`ACTION_UP` / `ACTION_CANCEL` → `clear_pressed(frame)`；**有变化才请求重绘**。按压态只有**绑定了监听的可交互节点**才有（无监听节点不获得反馈），开发者在 `on_touch_event` 中拦截的事件不触发默认按压态（FR-I2）。
+* **验证**：`tests/interaction.rs`（颜色变换、禁用透明与不向下传播、按下压暗、`set_pressed_at` / `clear_pressed` 的变化上报）。
+* **仍列 P1**：焦点态（`state_focused`）、动画 / 转场（SC-15）。
+
 ***
 
 ## 8. 功能行为规格（验收级）
@@ -1588,7 +1604,7 @@ v1 完成（Definition of Done）需**全部**满足：
 
 * [ ] SC-14（§7.10 组件扩展缺口）：`Image` 组件接入真实图片解码与资源管线（当前仅占位填充）；`Edit` 组件接入软键盘 / 文本输入（当前仅静态展示与输入拦截骨架）。
 
-* [ ] SC-15（§7.10 组件扩展缺口）：组件交互视觉细化——按压态 / 焦点态、`Card` 阴影参数精修、动画 / 转场（对齐 ADR-10「v1 不做按压态」的推迟项）。
+* [x] SC-15（§7.10 / §7.11）：**按压态已实现**（`Interaction::pressed` + `set_pressed_at` / `clear_pressed`，ADR-14）；`enabled` 禁用态一并落地。剩余——焦点态（`state_focused`）、`Card` 阴影参数精修、动画 / 转场仍列 v1.1。
 
 
 
@@ -1650,7 +1666,7 @@ v1 完成（Definition of Done）需**全部**满足：
 
 10. ~~Q10（视觉基线）~~ → **已决议（ADR-10）**：#121212 背景 + 圆角矩形按钮（+1 绿 /-1 红）。
 
-衍生决议：错误处理与 FFI 安全边界（ADR-11，thiserror + catch\_unwind + acquire/release）、density 与像素坐标系统一（ADR-12）、Android 密度模型与复合组件收敛（ADR-13）。
+衍生决议：错误处理与 FFI 安全边界（ADR-11，thiserror + catch\_unwind + acquire/release）、density 与像素坐标系统一（ADR-12）、Android 密度模型与复合组件收敛（ADR-13）、交互态 enabled/pressed（ADR-14）。
 
 \*\* 仍待 spike 回答的次级问题（不阻塞计划批准）\*\* 见 `docs/PLAN.md`「Open Questions」（文本 API 细节、ttc index、NDK 符号清单、cargo-apk2 metadata）。
 

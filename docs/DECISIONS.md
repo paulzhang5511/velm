@@ -226,6 +226,28 @@ v1 采用**按需渲染**：仅在状态变更（产生 Message 并 update）、
 
 ---
 
+## ADR-14：交互态 `enabled` / `pressed`（补齐 ADR-10 的按压态推迟项）
+
+**背景**：ADR-10 把「按压态」明确列为 v1 之外的推迟项（`v1 不做按压态动画（P1）`）。本增量在不引入动画的前提下补齐**静态**交互态，对齐 Android `View.setEnabled` / `state_enabled` / `state_pressed`，并作为 SPEC §12 SC-15 的首块。
+
+**决策**
+
+- **数据结构**：新增 `view::Interaction { enabled: bool, pressed: bool }`（默认 `enabled = true` / `pressed = false`），挂在 `TextView` / `ViewGroup` / `CommonStyle` 的 `interaction` 字段；不引入新的 `View` 变体（与 ADR-13 的收敛原则一致）。
+- **颜色变换集中在纯函数**：`Interaction::tint_fill`（禁用降透明 **且** 按下压暗）与 `tint_content`（仅禁用降透明）。常量 `DISABLED_ALPHA = 0.5`（对齐 Android `DISABLED_ALPHA`）、`PRESSED_SCALE = 0.85`。`enabled` 优先于 `pressed`。颜色计算与几何分离——禁用 / 按下**不改变布局**。
+- **命中测试**：禁用节点的 `node_listener` 返回 `None`，即对点击**透明**（事件穿透到下层兄弟）；**只影响本节点、不向下传播**（与 Android `View.setEnabled` 的 base 语义一致，不做 ViewGroup 递归传播）。
+- **按压态跟踪放 host 可测层**：`engine::hit_test::{set_pressed_at, clear_pressed}` 复用与命中测试相同的遍历顺序（子节点逆序、闭区间），返回「是否变化」供引擎决定是否重绘。仅**可交互**（绑定监听且未禁用）节点获得按压反馈。
+- **引擎接线最小化**：`engine/activity_thread.rs` 的 `handle_motion` 中，`ACTION_DOWN` → `set_pressed_at(true)`、`ACTION_UP/CANCEL` → `clear_pressed()`，有变化才 `note_message`（请求重绘）；不改变既有的「DOWN 命中派发消息」逻辑（FR-I1/I3）。
+
+**理由**：静态两态（可用 / 按下）用「颜色变换纯函数 + 单字段状态」即可覆盖绝大多数视觉反馈需求，无需动画系统（动画仍列 P1）。把状态跟踪放在 host 可测的 `hit_test` 层，使设备侧只剩极少接线，符合本项目「逻辑在 host 可测、FFI 边界最小」的一贯切分。
+
+**否决方案**：① 为交互态引入动画 / `Choreographer`——否决，超出静态反馈所需、且属 P1；② 禁用态向下递归传播到子节点——否决，与 Android base `View` 语义不符，且会让「禁用整块布局」变得不可预期；③ 把 `pressed` 只做成渲染开关、不做状态跟踪——否决，那样引擎无法在 `UP/CANCEL` 时清除，会「卡在按下态」。
+
+**落地**：SPEC §7.11；`tests/interaction.rs`（12 例）。门禁：host test 全绿、双 target clippy `-D warnings` 零告警、aarch64 交叉编译通过。
+
+**待办（P1）**：焦点态（`state_focused`）、动画 / 转场。
+
+---
+
 ## 决策汇总表（SPEC §14 关闭对照）
 
 | Q | 议题 | 决策 | ADR |
@@ -243,3 +265,4 @@ v1 采用**按需渲染**：仅在状态变更（产生 Message 并 update）、
 | — | 错误/FFI 安全 | thiserror 领域错误 + catch_unwind + acquire/release | ADR-11 |
 | — | density/坐标 | AConfiguration_getDensity，全链路像素坐标 | ADR-12 |
 | — | 密度模型 + 复合组件 | `DisplayMetrics`（dp/sp 分离、像素四舍五入取整）+ `View::Widget` / `WidgetKind` 八组件（Button/Card/Image/Progress/Check/Switch/Space/Edit），padding / Stroke 统一支持 | ADR-13 |
+| — | 交互态 | `Interaction{enabled,pressed}` + `set_enabled/set_pressed`；禁用降透明且点击透明（不向下传播），按下背景压暗；`set_pressed_at/clear_pressed` 引擎跟踪 | ADR-14 |

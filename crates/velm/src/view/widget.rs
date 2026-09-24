@@ -12,7 +12,7 @@ use peniko::Color;
 
 use super::View;
 use super::params::{
-    Background, EdgeInsets, LayoutDimension, LayoutParams, Orientation, Rect, Stroke,
+    Background, EdgeInsets, Interaction, LayoutDimension, LayoutParams, Orientation, Rect, Stroke,
 };
 
 /// 所有组件共用的样式与布局状态（绘制 / 布局 / 命中测试共享同一份数据）。
@@ -28,6 +28,8 @@ pub struct CommonStyle<Msg> {
     pub stroke: Stroke,
     /// 四向内边距（dp）。
     pub padding: EdgeInsets,
+    /// 交互态（可用 / 按下）；默认可用且未按下。禁用时不响应点击且视觉降透明。
+    pub interaction: Interaction,
     /// 点击命中所产生的消息；`None` 表示该节点不响应点击。
     pub on_click_listener: Option<Msg>,
     /// 布局阶段写入的绝对像素矩形；未布局前为全零。
@@ -43,6 +45,7 @@ impl<Msg> CommonStyle<Msg> {
             corner_radius_dp: 0.0,
             stroke: Stroke::default(),
             padding: EdgeInsets::default(),
+            interaction: Interaction::default(),
             on_click_listener: None,
             computed_rect: Rect::default(),
         }

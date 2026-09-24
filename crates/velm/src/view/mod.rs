@@ -13,7 +13,7 @@ mod view_group;
 mod widget;
 
 pub use params::{
-    Background, EdgeInsets, LayoutDimension, LayoutParams, Orientation, Rect, Stroke,
+    Background, EdgeInsets, Interaction, LayoutDimension, LayoutParams, Orientation, Rect, Stroke,
 };
 pub use text_view::{DEFAULT_TEXT_COLOR, DEFAULT_TEXT_SIZE, TextView};
 pub use view_group::ViewGroup;
@@ -147,6 +147,46 @@ impl<Msg> View<Msg> {
             }
             View::Widget(mut w) => {
                 w.common.layout_params = params;
+                View::Widget(w)
+            }
+        }
+    }
+
+    /// 设置可用态（参考 Android `View.setEnabled`）。三种节点均生效：
+    /// 禁用后该节点不响应点击（hit-test 视为透明），且绘制颜色按
+    /// [`params::DISABLED_ALPHA`] 降透明。**只影响本节点**，不向下传播。
+    pub fn set_enabled(self, enabled: bool) -> Self {
+        match self {
+            View::TextView(mut tv) => {
+                tv.interaction.enabled = enabled;
+                View::TextView(tv)
+            }
+            View::ViewGroup(mut vg) => {
+                vg.interaction.enabled = enabled;
+                View::ViewGroup(vg)
+            }
+            View::Widget(mut w) => {
+                w.common.interaction.enabled = enabled;
+                View::Widget(w)
+            }
+        }
+    }
+
+    /// 设置按下态（参考 Android `state_pressed`）。三种节点均生效：背景填充按
+    /// [`params::PRESSED_SCALE`] 压暗（文字 / 描边不变）。正常由引擎在
+    /// `ACTION_DOWN` → `ACTION_UP/CANCEL` 期间维护，也可手动设置做静态预览。
+    pub fn set_pressed(self, pressed: bool) -> Self {
+        match self {
+            View::TextView(mut tv) => {
+                tv.interaction.pressed = pressed;
+                View::TextView(tv)
+            }
+            View::ViewGroup(mut vg) => {
+                vg.interaction.pressed = pressed;
+                View::ViewGroup(vg)
+            }
+            View::Widget(mut w) => {
+                w.common.interaction.pressed = pressed;
                 View::Widget(w)
             }
         }
