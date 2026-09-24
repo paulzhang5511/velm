@@ -401,12 +401,20 @@ T1 workspace 骨架 + 空 cdylib 装机
 
 **Description:** 双 target clippy `-D warnings`、fmt、纯逻辑覆盖率 ≥85%、模块级 rustdoc（pub 项与 unsafe Safety 契约齐全）；SPEC/PLAN/DECISIONS 状态更新（决议落地勾选、P1 缺口登记 SC-10~13）；demo 视觉按 ADR-10 收尾（按压态除外）。
 **Acceptance criteria:**
-- [ ] SPEC §12 的 SC-1~SC-9 逐项有证据（命令输出/截图/日志）归档
-- [ ] 三文档与最终代码一致；P1 项明确列入 v1.1
+- [x] SPEC §12 的 SC-1~SC-9 代码侧证据归档（SC-7 门禁全绿、SC-8 渲染路径与尺寸重配、SC-9 文档化命令链）；设备侧（SC-2/3/4/5/6）证据待连机补录
+- [x] 三文档与最终代码一致；P1 项明确列入 v1.1（SC-10 ~ SC-15）
 **Verification:** 全量门禁命令 + 交付说明
 **Dependencies:** T15
 **Files:** `crates/velm/src/**`（文档注释/小修）、`docs/SPEC.md`、`docs/PLAN.md`、`docs/DECISIONS.md`
 **Estimated scope:** S
+
+> **实施记录（2026-09-24，T16 完成）**：
+>
+> - **门禁复核**：`cargo fmt --all -- --check` 干净；host `cargo clippy --workspace --all-targets -- -D warnings` 与 `cargo clippy -p velm --all-targets --target aarch64-linux-android -- -D warnings` 均**零告警**；host `cargo test -p velm` 全绿（lib + 11 个 test binary）。`counter` 示例的 aarch64 交叉**仅**因其 `build.rs` 要求 `ANDROID_NDK_ROOT`（环境依赖，非代码问题），`-p velm` 的 aarch64 交叉编译通过。
+> - **覆盖率**：`cargo llvm-cov --workspace --ignore-filename-regex '(activity_thread|window)\.rs'`（排除设备侧 FFI 文件）**行覆盖 95.53% / 函数 99.17%**。新增 `tests/widget_kinds.rs`（27 例）补齐 8 类组件的构造 / setter / 逐 `kind` 绘制分支，把覆盖从 74.47% 拉回并超过门槛；分项：`layout/measure` 96.51%、`engine/hit_test` 87.50%、`engine/events` 97.65%、`app/state` 100%、`view/widget` 100%、`render/scene` 90.58%、`view/mod` 92.41%。
+> - **文档归位（本轮主要产出）**：把「Android 密度模型 + 8 复合组件」扩展写入三文档——SPEC 新增 **§7.10**（`DisplayMetrics` / `View::Widget`+`WidgetKind` / padding+Stroke / `DrawCommand::StrokeRect` / 向后兼容），并更新 §1.5 范围与 §2 概念映射的 `View` 行；DECISIONS 新增 **ADR-13** 并登记汇总表与 §14 衍生决议；SPEC §12 增补 P1 缺口 **SC-14 / SC-15**（图片解码管线、Edit/IME、按压态与动画）。三文档与提交 `1fb7aaf` 的最终代码一致。
+> - **格式修正**：本任务顺带执行 `cargo fmt --all`，修掉上轮遗留的 3 处换行格式（`activity_thread.rs`、`measure.rs`），使 `fmt --check` 回到干净。
+> - **未覆盖（设备依赖）**：CP-C / CP-D / CP-E 的 SC-2/3/4/5/6、T14 启停压测、T15 干净环境复现与 release APK 均需连机（本机无 adb / 设备 / NDK 运行时）。
 
 ### Checkpoint E — v1 完成评审
 

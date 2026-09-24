@@ -12,12 +12,14 @@ mod text_view;
 mod view_group;
 mod widget;
 
-pub use params::{Background, EdgeInsets, LayoutDimension, LayoutParams, Orientation, Rect, Stroke};
+pub use params::{
+    Background, EdgeInsets, LayoutDimension, LayoutParams, Orientation, Rect, Stroke,
+};
 pub use text_view::{DEFAULT_TEXT_COLOR, DEFAULT_TEXT_SIZE, TextView};
 pub use view_group::ViewGroup;
 pub use widget::{
-    ButtonSpec, CardSpec, CheckSpec, CommonStyle, EditSpec, ImageScale, ImageSpec, ProgressOrientation,
-    ProgressSpec, SpaceSpec, SwitchSpec, WidgetKind, WidgetView,
+    ButtonSpec, CardSpec, CheckSpec, CommonStyle, EditSpec, ImageScale, ImageSpec,
+    ProgressOrientation, ProgressSpec, SpaceSpec, SwitchSpec, WidgetKind, WidgetView,
 };
 
 use peniko::Color;

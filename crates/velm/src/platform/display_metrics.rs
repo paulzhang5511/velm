@@ -92,12 +92,7 @@ impl DisplayMetrics {
     }
 
     /// 显式指定字体缩放系数（系统设置注入处）。
-    pub fn with_font_scale(
-        width_px: f32,
-        height_px: f32,
-        density: f32,
-        font_scale: f32,
-    ) -> Self {
+    pub fn with_font_scale(width_px: f32, height_px: f32, density: f32, font_scale: f32) -> Self {
         let density = if density.is_finite() && density > 0.0 {
             density
         } else {

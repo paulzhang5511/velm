@@ -432,10 +432,7 @@ fn draw_frame<A: Activity>(
         return;
     };
     let mut root = runtime.view();
-    measure_and_layout_with(
-        &mut root,
-        &DisplayMetrics::from_viewport(&vp),
-    );
+    measure_and_layout_with(&mut root, &DisplayMetrics::from_viewport(&vp));
     log::info!("出帧：{}x{} density={:.2}", vp.width, vp.height, vp.density);
     gpu.render(&root);
     *frame = Some(root);

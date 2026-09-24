@@ -205,6 +205,27 @@ v1 采用**按需渲染**：仅在状态变更（产生 Message 并 update）、
 
 ---
 
+## ADR-13：Android 风格密度模型（DisplayMetrics）与复合组件收敛（View::Widget + WidgetKind）
+
+**背景**：v1.0 冻结后，用户要求「参考 Android 开发多个组件，考虑 Android 的 density」扩展框架。原 ADR-12 只把 density 当裸 `f32`（dpi/160），且 §7.2 的 `View` 仅有 `TextView` / `ViewGroup`。
+
+**决策**
+
+- **密度模型**：新增 `platform::DisplayMetrics`（host 可测），把 density 升级为 Android 式完整概念——`density`（dpi/160）、`font_scale`（系统字体缩放，默认 1.0）、`scaled_density = density × font_scale`、`DensityBucket`（ldpi~xxxhdpi 六桶 + `Other`）。**dp 与 sp 分离**：布局尺寸走 dp（× density），文本字号走 sp（× scaled\_density）；所有最终物理像素**四舍五入取整**（对齐 `TypedValue.complexToDimensionPixelSize`）。换算必须经 `DisplayMetrics`，禁止散落 `value * density`。本 ADR **扩展** ADR-12（坐标系与观测路径不变）。
+- **复合组件收敛**：`View<Msg>` 只增加**一个**变体 `Widget(WidgetView<Msg>)`，八个组件（Button / Card / Image / Progress / Check / Switch / Space / Edit）的差异收敛到 `WidgetKind` 枚举；`measure` / `place` / `scene` / `hit_test` 各只需一个 `Widget` 派发分支，避免 `View` 枚举随组件数线性膨胀、以及所有既有穷举 `match` 被迫加 N 个分支。
+- **padding 与 Stroke**：`TextView` / `ViewGroup` / `Widget` 三类节点统一支持 `padding: EdgeInsets`（dp）与 `Stroke { color, width_dp }`；新增 `DrawCommand::StrokeRect`，渲染器用 kurbo `Stroke` + `Scene::stroke_rect` / `stroke_path` 实现。
+- **向后兼容**：`measure_and_layout` / `build_draw_list` 旧签名保留为薄包装（内部 `DisplayMetrics::new`，font\_scale = 1.0），引擎改走 `*_with(&DisplayMetrics)`。既有 25+ 处调用与测试零改动。
+
+**理由**：Android 的 density 体系（dp / sp / 桶 / 取整）是跨设备一致的既定心智模型，直接复用可让布局与真机对齐；组件以「单变体 + kind 枚举」承载，是把「开放组件集」限制在单点扩展的工程手段（对既有 `match` 的影响为常数级）。
+
+**否决方案**：① 为每个组件加一个 `View` 变体——否决，会让 `View` 枚举与全部 `match` 随组件数线性膨胀；② 把 `font_scale` 折进 `density`——否决，dp 与 sp 必须可分辨（系统字体缩放不应改变布局尺寸）。
+
+**落地**：提交 `1fb7aaf`（24 files, +1620/-158）；详见 SPEC §7.10、`tests/display_metrics.rs`、`tests/widget.rs`。门禁：host test 全绿、双 target clippy `-D warnings` 零警告、`aarch64-linux-android` 交叉编译通过。
+
+**待办（P1）**：SPEC §12 SC-14 / SC-15（图片解码管线、Edit/IME、按压态与动画）。
+
+---
+
 ## 决策汇总表（SPEC §14 关闭对照）
 
 | Q | 议题 | 决策 | ADR |
@@ -221,3 +242,4 @@ v1 采用**按需渲染**：仅在状态变更（产生 Message 并 update）、
 | Q10 | 视觉基线 | #121212 背景 + 圆角矩形按钮 | ADR-10 |
 | — | 错误/FFI 安全 | thiserror 领域错误 + catch_unwind + acquire/release | ADR-11 |
 | — | density/坐标 | AConfiguration_getDensity，全链路像素坐标 | ADR-12 |
+| — | 密度模型 + 复合组件 | `DisplayMetrics`（dp/sp 分离、像素四舍五入取整）+ `View::Widget` / `WidgetKind` 八组件（Button/Card/Image/Progress/Check/Switch/Space/Edit），padding / Stroke 统一支持 | ADR-13 |

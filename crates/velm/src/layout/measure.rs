@@ -16,7 +16,9 @@
 //! - 节点内容区 = 自身可用区扣除四向 `padding`，子节点在 padding 之内布局（Android 容器语义）。
 
 use crate::platform::DisplayMetrics;
-use crate::view::{EdgeInsets, LayoutDimension, LayoutParams, Orientation, View, WidgetKind, WidgetView};
+use crate::view::{
+    EdgeInsets, LayoutDimension, LayoutParams, Orientation, View, WidgetKind, WidgetView,
+};
 
 /// 文本宽度估算系数：docs 公式 `chars * size * 0.6`，仅 ASCII 近似。
 const TEXT_WIDTH_FACTOR: f32 = 0.6;
@@ -40,16 +42,8 @@ fn line_height(text_size_px: f32) -> f32 {
 /// 入口（薄包装，保留旧签名以兼容既有调用与测试）。
 ///
 /// `density` 按 ADR-12 提供（dpi/160.0，拿不到时兜底 1.0）；`font_scale` 默认 1.0。
-pub fn measure_and_layout<Msg>(
-    root: &mut View<Msg>,
-    width_px: f32,
-    height_px: f32,
-    density: f32,
-) {
-    measure_and_layout_with(
-        root,
-        &DisplayMetrics::new(width_px, height_px, density),
-    )
+pub fn measure_and_layout<Msg>(root: &mut View<Msg>, width_px: f32, height_px: f32, density: f32) {
+    measure_and_layout_with(root, &DisplayMetrics::new(width_px, height_px, density))
 }
 
 /// 入口（推荐）：以 [`DisplayMetrics`] 驱动完整密度换算（sp/dp 分离、像素取整）。
@@ -68,7 +62,12 @@ pub fn measure_and_layout_with<Msg>(root: &mut View<Msg>, metrics: &DisplayMetri
 }
 
 /// 第一遍：求尺寸。返回该节点的物理像素宽高，并写入 `computed_rect`。
-fn measure<Msg>(node: &mut View<Msg>, avail_w: f32, avail_h: f32, metrics: &DisplayMetrics) -> (f32, f32) {
+fn measure<Msg>(
+    node: &mut View<Msg>,
+    avail_w: f32,
+    avail_h: f32,
+    metrics: &DisplayMetrics,
+) -> (f32, f32) {
     let (width, height) = match node {
         View::TextView(tv) => measure_text(
             &tv.text,
@@ -108,7 +107,12 @@ fn measure_text(
     let content_h = line_height(size_px);
 
     let total_w = resolve_size(lp.width, avail_w, content_w + pad.left + pad.right, metrics);
-    let total_h = resolve_size(lp.height, avail_h, content_h + pad.top + pad.bottom, metrics);
+    let total_h = resolve_size(
+        lp.height,
+        avail_h,
+        content_h + pad.top + pad.bottom,
+        metrics,
+    );
     (metrics.round_px(total_w), metrics.round_px(total_h))
 }
 
@@ -119,8 +123,21 @@ fn measure_group<Msg>(
     avail_h: f32,
     metrics: &DisplayMetrics,
 ) -> (f32, f32) {
-    let (main_sum, cross_max) = measure_children(&mut group.children, group.orientation, group.padding, avail_w, avail_h, metrics);
-    resolve_container_size(&group.layout_params, group.orientation, (main_sum, cross_max), (avail_w, avail_h), metrics)
+    let (main_sum, cross_max) = measure_children(
+        &mut group.children,
+        group.orientation,
+        group.padding,
+        avail_w,
+        avail_h,
+        metrics,
+    );
+    resolve_container_size(
+        &group.layout_params,
+        group.orientation,
+        (main_sum, cross_max),
+        (avail_w, avail_h),
+        metrics,
+    )
 }
 
 /// Widget（容器 / 叶子）求尺寸；Card 递归测量其子节点。
@@ -136,13 +153,29 @@ fn measure_widget<Msg>(
 
     let (content_w, content_h) = match &mut w.kind {
         WidgetKind::Card(card) => {
-            let (main_sum, cross_max) =
-                measure_children(&mut card.children, card.orientation, EdgeInsets::default(), content_avail_w, content_avail_h, metrics);
+            let (main_sum, cross_max) = measure_children(
+                &mut card.children,
+                card.orientation,
+                EdgeInsets::default(),
+                content_avail_w,
+                content_avail_h,
+                metrics,
+            );
             container_content_size(card.orientation, main_sum, cross_max)
         }
-        WidgetKind::Button(b) => text_content(&b.text, b.text_size, content_avail_w, content_avail_h, metrics),
+        WidgetKind::Button(b) => text_content(
+            &b.text,
+            b.text_size,
+            content_avail_w,
+            content_avail_h,
+            metrics,
+        ),
         WidgetKind::Edit(e) => {
-            let src = if e.text.is_empty() { e.hint.clone() } else { e.text.clone() };
+            let src = if e.text.is_empty() {
+                e.hint.clone()
+            } else {
+                e.text.clone()
+            };
             text_content(&src, e.text_size, content_avail_w, content_avail_h, metrics)
         }
         WidgetKind::Image(img) => {
@@ -158,8 +191,18 @@ fn measure_widget<Msg>(
         WidgetKind::Space(s) => (s.width_dp * metrics.density, s.height_dp * metrics.density),
     };
 
-    let total_w = resolve_size(w.common.layout_params.width, avail_w, content_w + pad.left + pad.right, metrics);
-    let total_h = resolve_size(w.common.layout_params.height, avail_h, content_h + pad.top + pad.bottom, metrics);
+    let total_w = resolve_size(
+        w.common.layout_params.width,
+        avail_w,
+        content_w + pad.left + pad.right,
+        metrics,
+    );
+    let total_h = resolve_size(
+        w.common.layout_params.height,
+        avail_h,
+        content_h + pad.top + pad.bottom,
+        metrics,
+    );
     (metrics.round_px(total_w), metrics.round_px(total_h))
 }
 
@@ -221,7 +264,13 @@ fn resolve_container_size(
 }
 
 /// 文本内容的尺寸（不含 padding）。
-fn text_content(text: &str, text_size: f32, cav_w: f32, _cav_h: f32, metrics: &DisplayMetrics) -> (f32, f32) {
+fn text_content(
+    text: &str,
+    text_size: f32,
+    cav_w: f32,
+    _cav_h: f32,
+    metrics: &DisplayMetrics,
+) -> (f32, f32) {
     let size_px = text_size * metrics.scaled_density;
     let w = estimate_text_width(text, size_px).min(cav_w);
     let h = line_height(size_px);

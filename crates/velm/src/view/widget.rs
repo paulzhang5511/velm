@@ -10,8 +10,10 @@
 
 use peniko::Color;
 
-use super::params::{Background, EdgeInsets, LayoutDimension, LayoutParams, Orientation, Rect, Stroke};
 use super::View;
+use super::params::{
+    Background, EdgeInsets, LayoutDimension, LayoutParams, Orientation, Rect, Stroke,
+};
 
 /// 所有组件共用的样式与布局状态（绘制 / 布局 / 命中测试共享同一份数据）。
 #[derive(Clone, Debug)]

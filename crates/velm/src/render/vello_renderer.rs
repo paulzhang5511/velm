@@ -20,14 +20,14 @@ use vello_common::color::{AlphaColor, Srgb};
 use vello_common::kurbo::{Affine, Rect, RoundedRect, Shape, Stroke};
 use vello_common::peniko::Color;
 use vello_gpu::{
-    ClearSettings, Renderer, RenderSize, RenderTargetConfig, Resources, Scene, TargetInit,
+    ClearSettings, RenderSize, RenderTargetConfig, Renderer, Resources, Scene, TargetInit,
     TextureBindings,
 };
 use wgpu;
 
 use crate::error::{Error, Result};
-use crate::platform::window::NativeWindowWrapper;
 use crate::platform::DisplayMetrics;
+use crate::platform::window::NativeWindowWrapper;
 use crate::render::font::{FontCache, GlyphRun};
 use crate::render::scene::{DrawCommand, centered_baseline};
 use crate::view::View;
@@ -218,7 +218,8 @@ impl VelloRenderer {
         self.config.height = height;
         self.surface.configure(&self.device, &self.config);
         // 深度纹理尺寸须与 surface 同步，否则 render pass 的附件 extent 校验失败。
-        self.depth_view = Renderer::create_depth_texture_view(&self.device, &render_size_of(width, height));
+        self.depth_view =
+            Renderer::create_depth_texture_view(&self.device, &render_size_of(width, height));
         // 借用 last_frame 后再交给不需要 &mut self 的编码路径，故先取出。
         let commands = std::mem::take(&mut self.last_frame);
         if !commands.is_empty() {

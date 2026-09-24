@@ -112,7 +112,10 @@ fn card_recurses_children() {
         _ => panic!("root 应为容器"),
     };
     let card_rect = widget_rect_of(&kids[0]);
-    assert!(card_rect.width > 0.0 && card_rect.height > 0.0, "卡片自身被布局");
+    assert!(
+        card_rect.width > 0.0 && card_rect.height > 0.0,
+        "卡片自身被布局"
+    );
 
     if let View::Widget(w) = &kids[0] {
         match &w.kind {

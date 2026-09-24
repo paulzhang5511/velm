@@ -31,7 +31,7 @@
 >
 > `docs/DECISIONS.md`
 >
-> （ADR-01 ~ ADR-12）与 
+> （ADR-01 ~ ADR-13）与 
 >
 > `docs/PLAN.md`
 >
@@ -135,7 +135,7 @@
 
 * TEA 三契约：`Activity` trait、`View<Msg>` 树、`Message` 队列与 `update` 调度。
 
-* 基础视图：`TextView`、`ViewGroup`（仅 LinearLayout 的 Horizontal/Vertical 两种方向）。
+* 基础视图：`TextView`、`ViewGroup`（仅 LinearLayout 的 Horizontal/Vertical 两种方向）；以及 8 类复合组件（见 §7.10 `View::Widget`：`Button`/`Card`/`Image`/`Progress`/`Check`/`Switch`/`Space`/`Edit`），由统一的 `WidgetView` + `WidgetKind` 承载，新增组件只需加一个 `kind`。
 
 * LayoutParams：`MATCH_PARENT` / `WRAP_CONTENT` / `Dp(f32)`、四向 margin（margin 字段必须在布局中生效，修正 docs 算法遗漏，见 §8.3）。
 
@@ -153,7 +153,7 @@
 
 * 除 LinearLayout 外的布局（FrameLayout/RelativeLayout/ConstraintLayout/Flexbox 完整语义）。
 
-* 图片、矢量图、动画、转场、裁剪、padding/gravity/weight（**按钮圆角矩形背景除外**，见 ADR-10）。
+* 矢量图、动画、转场、裁剪、gravity/weight（**按钮圆角矩形背景、padding、描边 Stroke 除外**，均已实现，见 ADR-10/§7.10）。`Image` 组件仅占位填充（无真实图片解码，图片资源管线列 P1）；`Edit` 组件仅静态展示与输入拦截骨架（编辑器 / 软键盘集成列 P1）。
 
 * `Intent` 异步副作用任务的真正执行器（v1 仅保留占位类型与 `none()`，见 §7.6；线程池异步为 P1）。
 
@@ -174,7 +174,7 @@
 | Android 原生概念                  | Velm 中的 Rust 形态                                        | 职责                                                          |
 | ----------------------------- | ------------------------------------------------------ | ----------------------------------------------------------- |
 | `Activity`                    | `trait Activity`                                       | 页面 / 生命周期容器：`on_create`、`update`、`on_draw`、`on_touch_event` |
-| `View`                        | `enum View<Msg> { TextView(..), ViewGroup(..) }`       | 所有 UI 节点的统一抽象，持有样式与链式事件方法                                   |
+| `View`                        | `enum View<Msg> { TextView(..), ViewGroup(..), Widget(WidgetView<Msg>) }` | 所有 UI 节点的统一抽象，持有样式与链式事件方法；组件差异收敛到 `Widget::kind`（`WidgetKind`） |
 | `ViewGroup`                   | `struct ViewGroup<Msg>`                                | 容器节点：`orientation` + `children: Vec<View<Msg>>`             |
 | `TextView`                    | `struct TextView<Msg>`                                 | 文本节点：`text`、`text_size`、`text_color`                        |
 | `MotionEvent`                 | `struct MotionEvent { action, x, y }`                  | 对齐 `ACTION_DOWN/MOVE/UP/CANCEL` 语义                          |
@@ -1279,6 +1279,43 @@ impl VelloRenderer {
 
 ***
 
+### 7.10 复合组件（`View::Widget`）与密度模型（`DisplayMetrics`）【框架扩展，2026-09-23】
+
+> **溯源**：本节为 SPEC v1.0 冻结后的**增量扩展**（原 §7.2 仅 `TextView` / `ViewGroup` 两种节点、§7.1 仅裸 `density: f32`），落地见 `PLAN.md` T16 实施记录与提交 `1fb7aaf`。实现方向为「参考 Android 多组件 + 密度适配」，**不改变 v1 既有契约**（`measure_and_layout` / `build_draw_list` 旧签名保留为薄包装），故对既有任务与测试无破坏。
+
+**密度模型 `platform::DisplayMetrics`（host 可测，无 android 符号）**
+
+* 字段：`width_px` / `height_px` / `density`（= dpi/160）/ `font_scale`（系统字体缩放，默认 1.0）/ `scaled_density`（= density × font_scale）/ `bucket`（`DensityBucket`）。
+* `DensityBucket`：`Ldpi(0.75)` / `Mdpi(1.0)` / `Hdpi(1.5)` / `Xhdpi(2.0)` / `Xxhdpi(3.0)` / `Xxxhdpi(4.0)` / `Other(f32)`；`from_density(d)` 取最近桶，非法值（≤0 / NaN / ∞）兜底 `Mdpi`。
+* **dp 与 sp 分离**：dp 尺寸乘 `density`；文本字号（sp）乘 `scaled_density`——系统调大字体时文本放大而布局尺寸不变（对齐 Android `TypedValue` 语义）。
+* 换算方法：`dp(f32)->f32`、`sp(f32)->f32`、`round_px` / `round_dp` / `round_sp`、`px_to_dp`；所有最终物理像素**四舍五入取整**（对齐 `TypedValue.complexToDimensionPixelSize`）。
+* 构造：`DisplayMetrics::new(w, h, density)`（font_scale = 1.0）、`with_font_scale`、`from_dpi`、`from_viewport(&Viewport)`（引擎在 `WindowCreated` / `WindowResized` 使用）。
+* 纪律：dp/sp→px 换算必须经 `DisplayMetrics`，禁止在布局 / 渲染里散落 `value * density` 硬编码。
+
+**复合组件 `view::WidgetView` / `WidgetKind`**
+
+* `View<Msg>` 增加**唯一**新变体 `Widget(WidgetView<Msg>)`；组件差异收敛到 `WidgetKind` 枚举，使 `measure` / `place` / `scene` / `hit_test` 各只需 **1 个** `View::Widget` 派发分支（再按 `kind` 分派），避免 `View` 枚举随组件数线性膨胀。
+* `WidgetView<Msg> { common: CommonStyle<Msg>, kind: WidgetKind<Msg> }`；`CommonStyle<Msg>` 承载 `layout_params` / `background` / `corner_radius_dp` / `stroke` / `padding` / `on_click_listener` / `computed_rect`。
+* `WidgetKind` 八个组件：`Button`（文本 + 圆角填充 + 居中文本）、`Card`（可含子节点的容器，阴影 + 背景 + 递归布局）、`Image`（占位填充，无解码）、`Progress`（轨道 + 进度条，横 / 纵）、`Check`（方框 + 勾）、`Switch`（轨道 + 滑块）、`Space`（纯占位，不绘制）、`Edit`（文本 + hint + 内缩）。
+* 构造器（`View::` 关联函数，链式消费 `self`）：`button(text)` / `card()` / `card_with(..)` / `image_view()` / `progress_bar()` / `check_box(..)` / `switch(..)` / `space()` / `edit_text(..)`；链式：`set_corner_radius_dp` / `set_stroke` / `set_padding` / `set_progress` / `set_checked` / `set_image_placeholder` / `set_space_size` / `set_text_size` / `set_text_color` / `set_background_color`。
+
+**padding（内边距）与 Stroke（描边）**
+
+* `TextView` / `ViewGroup` / `Widget` 三类节点均支持 `padding: EdgeInsets`（**dp**，布局阶段乘 density）；容器内容区 = 自身可用区扣除四向 padding，子节点在内容区内布局并累加 padding 偏移（Android 容器语义）。
+* `Stroke { color: Option<Color>, width_dp: f32 }`：`width_dp` 为 dp，绘制阶段乘 density；`color = None` 表示不描边。
+
+**渲染指令扩展**
+
+* `DrawCommand` 增加 `StrokeRect { rect, color, width_px, corner_radius }`；渲染器 `encode` 用 `vello::kurbo::Stroke` + `Scene::stroke_rect` / `stroke_path` 绘制（已核对 vello_gpu 0.2 `Scene` 具备该 API）。原有 `FillRect` / `Text` 语义与顺序不变（画家算法）。
+
+**向后兼容**
+
+* `measure_and_layout(root, w_px, h_px, density)` 与 `build_draw_list(root, density)` 保留为薄包装，内部转 `DisplayMetrics::new`（font_scale = 1.0）；引擎走 `measure_and_layout_with(&mut root, &DisplayMetrics::from_viewport(&vp))` 与 `build_draw_list_with(root, &metrics)`。
+
+**验证**：`tests/display_metrics.rs`（桶划分、dp≠sp、font_scale、取整、`px_to_dp`、`from_viewport`）与 `tests/widget.rs`（各组件 measure / place / scene / hit_test 管线、padding 内缩）全绿；`View` 穷举 `match` 全量补齐 `Widget` 分支。
+
+***
+
 ## 8. 功能行为规格（验收级）
 
 ### 8.1 生命周期与窗口
@@ -1549,6 +1586,10 @@ v1 完成（Definition of Done）需**全部**满足：
 
 * [ ] SC-13：真实文本度量（替换 `chars*size*0.6` 近似）与自动换行；更完整的字体 fallback。
 
+* [ ] SC-14（§7.10 组件扩展缺口）：`Image` 组件接入真实图片解码与资源管线（当前仅占位填充）；`Edit` 组件接入软键盘 / 文本输入（当前仅静态展示与输入拦截骨架）。
+
+* [ ] SC-15（§7.10 组件扩展缺口）：组件交互视觉细化——按压态 / 焦点态、`Card` 阴影参数精修、动画 / 转场（对齐 ADR-10「v1 不做按压态」的推迟项）。
+
 
 
 ***
@@ -1609,7 +1650,7 @@ v1 完成（Definition of Done）需**全部**满足：
 
 10. ~~Q10（视觉基线）~~ → **已决议（ADR-10）**：#121212 背景 + 圆角矩形按钮（+1 绿 /-1 红）。
 
-衍生决议：错误处理与 FFI 安全边界（ADR-11，thiserror + catch\_unwind + acquire/release）、density 与像素坐标系统一（ADR-12）。
+衍生决议：错误处理与 FFI 安全边界（ADR-11，thiserror + catch\_unwind + acquire/release）、density 与像素坐标系统一（ADR-12）、Android 密度模型与复合组件收敛（ADR-13）。
 
 \*\* 仍待 spike 回答的次级问题（不阻塞计划批准）\*\* 见 `docs/PLAN.md`「Open Questions」（文本 API 细节、ttc index、NDK 符号清单、cargo-apk2 metadata）。
 

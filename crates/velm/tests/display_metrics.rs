@@ -16,7 +16,10 @@ fn dp_multiplies_by_density_only() {
 fn sp_includes_font_scale() {
     // density=2 但字体放大 1.5 倍 → sp 比 dp 多乘 font_scale。
     let m = DisplayMetrics::with_font_scale(1080.0, 1920.0, 2.0, 1.5);
-    assert_eq!(m.scaled_density, 3.0, "scaled_density = density * font_scale");
+    assert_eq!(
+        m.scaled_density, 3.0,
+        "scaled_density = density * font_scale"
+    );
     assert_eq!(m.dp(100.0), 200.0, "dp 不受字体缩放影响");
     assert_eq!(m.sp(100.0), 300.0, "sp 含字体缩放");
 }
@@ -64,7 +67,10 @@ fn density_bucket_selection() {
     assert_eq!(DensityBucket::from_density(3.0), DensityBucket::Xxhdpi);
     assert_eq!(DensityBucket::from_density(4.0), DensityBucket::Xxxhdpi);
     // 非标准密度落入 Other 桶并保留原始 scale。
-    assert_eq!(DensityBucket::from_density(2.75), DensityBucket::Other(2.75));
+    assert_eq!(
+        DensityBucket::from_density(2.75),
+        DensityBucket::Other(2.75)
+    );
 }
 
 #[test]
